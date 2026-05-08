@@ -28,8 +28,19 @@ def send_telegram_alert(
     Returns (success, detail). The function never raises for missing credentials or
     Telegram API errors, which makes it safe to call from a dashboard button.
     """
-    token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+    def get_secret(name: str, default: str = "") -> str:
+        value = ""
+        try:
+            import streamlit as st
+            value = st.secrets.get(name, "")
+        except Exception:
+            value = ""
+        if not value:
+            value = os.getenv(name, default)
+        return str(value or "").strip()
+
+    token = bot_token or get_secret("TELEGRAM_BOT_TOKEN")
+    chat = chat_id or get_secret("TELEGRAM_CHAT_ID")
 
     if not token or not chat:
         return False, "Telegram token/chat_id missing. Set secrets or environment variables."

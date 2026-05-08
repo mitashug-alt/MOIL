@@ -5,20 +5,21 @@ affecting manganese, silico-manganese, ferroalloys, Indian steel demand, China s
 energy stress, freight, USDINR, and commodity-cycle regime.
 """
 
+import io
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from gemini_macro_scorer import (
-    get_gemini_config,
-    is_gemini_configured,
-    score_macro_with_gemini,
-    generate_gemini_commentary,
+from groq_macro_scorer import (
+    get_groq_config,
+    is_groq_configured,
+    score_macro_with_groq,
+    generate_groq_commentary,
 )
 from macro_radar import (
     DEFAULT_MARKET_TICKERS,
@@ -27,11 +28,13 @@ from macro_radar import (
     correlation_matrix,
     detect_anomalies,
     fetch_market_data,
-    generate_gemini_commentary_wrapper,
+    generate_groq_commentary_wrapper,
     generate_rule_based_commentary,
     metric_snapshot,
     normalize_manual_macro,
     read_manual_macro_csv,
+    read_news_tracker_csv,
+    fetch_nse_deals,
     rolling_correlation,
 )
 from telegram_alert import send_telegram_alert
@@ -47,6 +50,7 @@ st.set_page_config(
 # Constants
 DATA_DIR = Path("data")
 MANUAL_TEMPLATE_PATH = DATA_DIR / "manual_macro_template.csv"
+NEWS_TRACKER_PATH = DATA_DIR / "news_tracker.csv"
 
 # Sidebar controls
 st.sidebar.title("MOIL Macro Radar")
@@ -75,9 +79,9 @@ with st.sidebar.expander("Manual macro scoring", expanded=False):
         help="Use the included template for silico-manganese, India steel, China exports and power-stress rows.",
     )
 
-# Gemini controls
-enable_gemini_scoring = st.sidebar.checkbox("Enable Gemini auto scoring", value=False)
-enable_gemini_commentary = st.sidebar.checkbox("Enable Gemini commentary", value=False)
+# Groq controls
+enable_groq_scoring = st.sidebar.checkbox("Enable Groq auto scoring", value=False)
+enable_groq_commentary = st.sidebar.checkbox("Enable Groq commentary", value=False)
 
 # Telegram controls
 enable_telegram = st.sidebar.checkbox("Enable Telegram alerts", value=False)
@@ -91,8 +95,9 @@ st.caption(
 # Initialize session state
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
-    st.session_state.gemini_scores = None
-    st.session_state.gemini_commentary = None
+    st.session_state.groq_scores = None
+    st.session_state.groq_commentary = None
+    st.session_state.news_tracker = None
 
 # Load market data
 if not st.session_state.data_loaded:
@@ -120,19 +125,24 @@ if not st.session_state.data_loaded:
             else:
                 manual_macro = read_manual_macro_csv(MANUAL_TEMPLATE_PATH)
 
+            # Load News Tracker
+            news_tracker = read_news_tracker_csv(NEWS_TRACKER_PATH)
+
             # Compute analytics
             corr = correlation_matrix(prices, lookback=correlation_lookback)
             moil_corr = corr.loc["MOIL"].drop("MOIL").sort_values(ascending=False).reset_index()
             moil_corr.columns = ["asset", "correlation_to_moil"]
             anomalies = detect_anomalies(prices, window=anomaly_window, threshold=2.5)
 
-            # Compute regime score (without Gemini initially)
+            # Compute regime score (without Groq initially)
             scorecard, summary = compute_regime_score(prices, manual_macro)
 
             # Store in session state
+            st.session_state.data = data
             st.session_state.prices = prices
             st.session_state.snapshot = snapshot
             st.session_state.manual_macro = manual_macro
+            st.session_state.news_tracker = news_tracker
             st.session_state.corr = corr
             st.session_state.moil_corr = moil_corr
             st.session_state.anomalies = anomalies
@@ -148,13 +158,14 @@ if not st.session_state.data_loaded:
             st.stop()
 
 # Tabs
-tab_overview, tab_correlations, tab_regime, tab_macro, tab_gemini, tab_alerts, tab_data = st.tabs(
+tab_overview, tab_correlations, tab_regime, tab_macro, tab_news, tab_groq, tab_alerts, tab_data = st.tabs(
     [
         "Market radar",
         "Correlation engine",
         "Regime score",
         "Manual macro tracker",
-        "Gemini auto scoring",
+        "News & Institutional",
+        "Groq auto scoring",
         "Alerts & commentary",
         "Data quality",
     ]
@@ -190,8 +201,8 @@ with tab_overview:
                 st.plotly_chart(fig, use_container_width=True)
 
         # MOIL candlestick if available
-        if "MOIL" in data and not data["MOIL"].empty:
-            moil_df = data["MOIL"].dropna(subset=["Close"])
+        if "MOIL" in st.session_state.data and not st.session_state.data["MOIL"].empty:
+            moil_df = st.session_state.data["MOIL"].dropna(subset=["Close"])
             if len(moil_df) > 0:
                 candle = go.Figure(
                     data=[
@@ -331,12 +342,12 @@ with tab_macro:
         st.session_state.manual_macro = normalize_manual_macro(edited_manual_macro)
         # Recompute regime score
         st.session_state.scorecard, st.session_state.summary = compute_regime_score(
-            st.session_state.prices, st.session_state.manual_macro, st.session_state.gemini_scores
+            st.session_state.prices, st.session_state.manual_macro, st.session_state.groq_scores
         )
         st.rerun()
 
     # Download button
-    csv_buffer = pd.io.common.StringIO()
+    csv_buffer = io.StringIO()
     st.session_state.manual_macro.to_csv(csv_buffer, index=False)
     st.download_button(
         "Download updated manual macro CSV",
@@ -346,16 +357,107 @@ with tab_macro:
     )
     st.caption("Place the downloaded file at `data/manual_macro_template.csv` to load it automatically on the next run.")
 
-# Gemini auto scoring tab
-with tab_gemini:
-    st.subheader("Gemini auto scoring")
+# News & Institutional tab
+with tab_news:
+    st.subheader("News & Institutional Activity Tracker")
+    st.write(
+        "Track negative news, fund deratings, and FII/DII activity for MOIL. Impacts here are qualitative but help contextualize the regime."
+    )
+
+    # Fetch Latest News via yfinance
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("AI Sync: Fetch & Parse Latest News"):
+            with st.spinner("Fetching latest MOIL news and parsing with Groq..."):
+                try:
+                    import yfinance as yf
+                    moil = yf.Ticker("MOIL.NS")
+                    news = moil.news
+                    if news:
+                        raw_text = "\n\n".join([
+                            f"Title: {n.get('title')}\nPublisher: {n.get('publisher')}\nSummary: {n.get('summary', 'No summary')}"
+                            for n in news[:10]
+                        ])
+                        from groq_macro_scorer import extract_news_updates
+                        updates = extract_news_updates(raw_text)
+                        if updates:
+                            new_df = pd.DataFrame(updates)
+                            # Merge with existing
+                            st.session_state.news_tracker = pd.concat([new_df, st.session_state.news_tracker]).drop_duplicates(subset=["item"], keep="first")
+                            st.success(f"Extracted {len(updates)} updates from latest news.")
+                            st.rerun()
+                        else:
+                            st.info("No specific fund actions or deratings found in recent news.")
+                    else:
+                        st.warning("No recent news found for MOIL.NS via yfinance.")
+                except Exception as e:
+                    st.error(f"News sync failed: {e}")
+
+    with col2:
+        if st.button("NSE Sync: Bulk & Block Deals"):
+            with st.spinner("Fetching latest deals from NSE India..."):
+                try:
+                    from macro_radar import fetch_nse_deals
+                    deals_df = fetch_nse_deals("MOIL")
+                    if deals_df is not None and not deals_df.empty:
+                        # Extract relevant columns
+                        # NSE usually has: date, clientName, type, quantity, price, symbol
+                        updates = []
+                        for _, row in deals_df.head(10).iterrows():
+                            # Type is usually 'BUY' or 'SELL'
+                            deal_type = row.get('type', 'DEAL')
+                            impact = 1.0 if 'BUY' in str(deal_type).upper() else -1.0
+                            updates.append({
+                                "category": "Institutional",
+                                "item": row.get('clientName', 'Unknown Client'),
+                                "value": deal_type,
+                                "impact": impact,
+                                "details": f"Price: {row.get('price')}, Qty: {row.get('quantity')} on {row.get('date')}"
+                            })
+                        
+                        if updates:
+                            new_df = pd.DataFrame(updates)
+                            st.session_state.news_tracker = pd.concat([new_df, st.session_state.news_tracker]).drop_duplicates(subset=["item", "details"], keep="first")
+                            st.success(f"Fetched {len(updates)} institutional deals from NSE.")
+                            st.rerun()
+                    else:
+                        st.info("No recent Bulk/Block deals found for MOIL on NSE.")
+                except Exception as e:
+                    st.error(f"NSE sync failed: {e}. NSE site might be blocking the request.")
+
+    edited_news_tracker = st.data_editor(
+        st.session_state.news_tracker,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key="news_tracker_editor",
+        column_config={
+            "impact": st.column_config.NumberColumn("Impact (-2 to +2)", min_value=-2, max_value=2, step=0.5),
+            "value": st.column_config.SelectboxColumn(
+                "Value/Sentiment", options=["Strong Positive", "Positive", "Stable", "Neutral", "Caution", "Negative", "Stress", "Exited", "0.91%", "0.41%", "0.33%", "0.30%", "0.29%", "0.28%", "0.22%", "0.18%", "0.17%"]
+            ),
+            "details": st.column_config.TextColumn("Details/Context", width="large"),
+        },
+    )
+
+    if not edited_news_tracker.equals(st.session_state.news_tracker):
+        st.session_state.news_tracker = edited_news_tracker
+        st.rerun()
+
+    # Save button
+    if st.button("Save News Tracker"):
+        DATA_DIR.mkdir(exist_ok=True)
+        st.session_state.news_tracker.to_csv(NEWS_TRACKER_PATH, index=False)
+        st.success(f"News tracker saved to {NEWS_TRACKER_PATH}")
+with tab_groq:
+    st.subheader("Groq auto scoring")
 
     # Configuration status
-    config = get_gemini_config()
+    config = get_groq_config()
     st.markdown("#### Configuration Status")
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Gemini configured", "Yes" if is_gemini_configured() else "No")
+        st.metric("Groq configured", "Yes" if is_groq_configured() else "No")
     with col2:
         st.metric("Model", config["model"])
     with col3:
@@ -363,13 +465,13 @@ with tab_gemini:
     with col4:
         st.metric("Project", config["project"])
 
-    if not is_gemini_configured():
-        st.warning("Gemini is not configured. Set GEMINI_API_KEY in secrets or environment variables.")
+    if not is_groq_configured():
+        st.warning("Groq is not configured. Set GROQ_API_KEY in secrets or environment variables. Get a free key at console.groq.com.")
         st.stop()
 
-    # Run Gemini scoring
-    if st.button("Run Gemini macro scoring", disabled=not enable_gemini_scoring):
-        with st.spinner("Generating Gemini macro scores..."):
+    # Run Groq scoring
+    if st.button("Run Groq macro scoring", disabled=not enable_groq_scoring):
+        with st.spinner("Generating Groq macro scores..."):
             try:
                 market_snapshot = st.session_state.snapshot
                 regime_context = {
@@ -377,77 +479,80 @@ with tab_gemini:
                     "normalized_score": st.session_state.summary.normalized_score,
                 }
 
-                gemini_result = score_macro_with_gemini(
+                groq_result = score_macro_with_groq(
                     st.session_state.manual_macro,
                     market_snapshot,
-                    regime_context
+                    regime_context,
+                    st.session_state.news_tracker
                 )
 
-                if gemini_result:
-                    st.session_state.gemini_scores = gemini_result
+                if groq_result:
+                    st.session_state.groq_scores = groq_result
 
-                    # Recompute regime score with Gemini scores
+                    # Recompute regime score with Groq scores
                     st.session_state.scorecard, st.session_state.summary = compute_regime_score(
-                        st.session_state.prices, st.session_state.manual_macro, st.session_state.gemini_scores
+                        st.session_state.prices, st.session_state.manual_macro, st.session_state.groq_scores
                     )
 
-                    st.success("Gemini macro scoring completed!")
+                    st.success("Groq macro scoring completed!")
 
                     # Display results
-                    st.markdown("#### Gemini Macro Scores")
-                    gemini_df = pd.DataFrame(gemini_result["macro_scores"])
-                    st.dataframe(gemini_df, use_container_width=True, hide_index=True)
+                    st.markdown("#### Groq Macro Scores")
+                    groq_df = pd.DataFrame(groq_result["macro_scores"])
+                    st.dataframe(groq_df, use_container_width=True, hide_index=True)
 
                     st.markdown("#### Overall Assessment")
-                    st.metric("Overall manual macro score", f"{gemini_result['overall_manual_macro_score']:+.2f}")
-                    st.write(f"**Regime commentary:** {gemini_result['regime_commentary']}")
+                    st.metric("Overall manual macro score", f"{groq_result['overall_manual_macro_score']:+.2f}")
+                    st.write(f"**Regime commentary:** {groq_result['regime_commentary']}")
 
-                    if gemini_result.get("watch_items"):
+                    if groq_result.get("watch_items"):
                         st.markdown("**Watch items:**")
-                        for item in gemini_result["watch_items"]:
+                        for item in groq_result["watch_items"]:
                             st.write(f"- {item}")
 
-                    if gemini_result.get("risks"):
+                    if groq_result.get("risks"):
                         st.markdown("**Risks:**")
-                        for risk in gemini_result["risks"]:
+                        for risk in groq_result["risks"]:
                             st.write(f"- {risk}")
 
                     # Apply to current session
-                    if st.button("Apply Gemini scores to regime calculation"):
+                    if st.button("Apply Groq scores to regime calculation"):
                         st.rerun()
 
                 else:
-                    st.error("Gemini scoring failed. Check API key and configuration.")
+                    st.error("Groq scoring failed. Check API key and configuration.")
 
             except Exception as exc:
-                st.error(f"Gemini scoring error: {exc}")
+                st.error(f"Groq scoring error: {exc}")
 
 # Alerts and commentary tab
 with tab_alerts:
     st.subheader("AI-generated macro commentary")
 
     # Generate commentary
-    if enable_gemini_commentary and is_gemini_configured():
-        if st.button("Generate Gemini commentary"):
-            with st.spinner("Generating Gemini commentary..."):
+    if enable_groq_commentary and is_groq_configured():
+        if st.button("Generate Groq commentary"):
+            with st.spinner("Generating Groq commentary..."):
                 try:
                     context = {
                         "regime_label": st.session_state.summary.label,
                         "regime_score": st.session_state.summary.normalized_score,
-                        "manual_macro_score": st.session_state.gemini_scores.get("overall_manual_macro_score", 0) if st.session_state.gemini_scores else 0,
+                        "manual_macro_score": st.session_state.groq_scores.get("overall_manual_macro_score", 0) if st.session_state.groq_scores else 0,
                         "top_correlations": st.session_state.moil_corr.head(3).to_dict('records') if not st.session_state.moil_corr.empty else [],
                         "anomalies": st.session_state.anomalies.head(5).to_dict('records') if not st.session_state.anomalies.empty else [],
+                        "news_tracker": st.session_state.news_tracker,
                     }
 
-                    commentary = generate_gemini_commentary(context)
-                    if commentary:
-                        st.session_state.gemini_commentary = commentary
+                    result = generate_groq_commentary(context)
+                    if result.get("ok"):
+                        commentary = result.get("institutional_commentary", "")
+                        st.session_state.groq_commentary = commentary
                         st.markdown(commentary)
                     else:
-                        st.error("Gemini commentary generation failed.")
+                        st.error(result.get("error", "Groq commentary generation failed."))
 
                 except Exception as exc:
-                    st.error(f"Gemini commentary error: {exc}")
+                    st.error(f"Groq commentary error: {exc}")
     else:
         # Use rule-based commentary
         commentary = generate_rule_based_commentary(
@@ -463,7 +568,10 @@ with tab_alerts:
     alert_message = build_telegram_alert_text(
         st.session_state.summary,
         st.session_state.scorecard,
-        st.session_state.anomalies
+        st.session_state.anomalies,
+        st.session_state.prices,
+        st.session_state.manual_macro,
+        st.session_state.news_tracker,
     )
     st.text_area("Alert preview", alert_message, height=180)
 
@@ -490,8 +598,8 @@ with tab_data:
     st.markdown("#### Data Quality")
     quality_data = []
     for name in edited_tickers.keys():
-        if name in data:
-            df = data[name]
+        if name in st.session_state.data:
+            df = st.session_state.data[name]
             row_count = len(df)
             date_range = f"{df.index.min().date() if not df.empty else 'N/A'} to {df.index.max().date() if not df.empty else 'N/A'}"
             last_price = df['Close'].iloc[-1] if not df.empty and 'Close' in df.columns else 'N/A'

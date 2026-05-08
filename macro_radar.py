@@ -19,7 +19,7 @@ try:
 except ModuleNotFoundError:  # Allows offline tests before requirements are installed.
     yf = None
 
-from gemini_macro_scorer import generate_gemini_commentary, score_macro_with_gemini
+from groq_macro_scorer import generate_groq_commentary, score_macro_with_groq
 
 
 DEFAULT_MARKET_TICKERS: Dict[str, str] = {
@@ -477,7 +477,7 @@ def classify_regime(normalized_score: float) -> Tuple[str, str]:
 def compute_regime_score(
     prices: pd.DataFrame,
     manual_macro: Optional[pd.DataFrame] = None,
-    gemini_scores: Optional[Dict[str, Any]] = None,
+    groq_scores: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, RegimeSummary]:
     """Compute a transparent composite regime score.
 
@@ -524,15 +524,15 @@ def compute_regime_score(
 
     # Manual macro indicators
     if manual_macro is not None and not manual_macro.empty:
-        # Use Gemini scores if available, otherwise manual scores
-        if gemini_scores and "macro_scores" in gemini_scores:
-            for gemini_score in gemini_scores["macro_scores"]:
-                indicator = gemini_score.get("indicator", "")
-                score = gemini_score.get("score", 0)
-                rationale = gemini_score.get("rationale", "Gemini AI assessment")
+        # Use Groq scores if available, otherwise manual scores
+        if groq_scores and "macro_scores" in groq_scores:
+            for groq_score in groq_scores["macro_scores"]:
+                indicator = groq_score.get("indicator", "")
+                score = groq_score.get("score", 0)
+                rationale = groq_score.get("rationale", "Groq AI assessment")
                 _score_component(
                     components,
-                    "Manual Macro (Gemini)",
+                    "Manual Macro (Groq)",
                     f"{indicator} (AI)",
                     score,
                     2.0,
@@ -639,13 +639,13 @@ def generate_rule_based_commentary(
     return "\n\n".join(lines)
 
 
-def generate_gemini_commentary_wrapper(
+def generate_groq_commentary_wrapper(
     summary: RegimeSummary,
     scorecard: pd.DataFrame,
     moil_corr: pd.DataFrame,
     anomalies: pd.DataFrame,
 ) -> str:
-    """Generate Gemini commentary for the dashboard."""
+    """Generate Groq commentary for the dashboard."""
     context = {
         "regime_label": summary.label,
         "regime_score": summary.normalized_score,
@@ -653,17 +653,94 @@ def generate_gemini_commentary_wrapper(
         "top_correlations": moil_corr.head(3).to_dict('records') if not moil_corr.empty else [],
         "anomalies": anomalies.head(5).to_dict('records') if not anomalies.empty else [],
     }
-    return generate_gemini_commentary(context) or generate_rule_based_commentary(summary, scorecard, moil_corr, anomalies)
+    result = generate_groq_commentary(context)
+    if result.get("ok"):
+        return result.get("institutional_commentary", "")
+    return generate_rule_based_commentary(summary, scorecard, moil_corr, anomalies)
 
 
 # Legacy alias for backward compatibility
-generate_openai_commentary = generate_gemini_commentary_wrapper
+generate_openai_commentary = generate_groq_commentary_wrapper
+
+
+def fetch_nse_deals(symbol: str = "MOIL") -> Optional[pd.DataFrame]:
+    """Fetch recent Bulk and Block deals for a symbol from NSE India.
+    
+    NSE India has strict anti-scraping. This function uses a session with headers
+    to try and bypass basic blocks.
+    """
+    import requests
+    
+    # NSE requires a session to get cookies first
+    base_url = "https://www.nseindia.com"
+    api_url = f"https://www.nseindia.com/api/report-bulk-block-deal?symbol={symbol}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.nseindia.com/report-detail/display-bulk-and-block-deals",
+    }
+    
+    try:
+        session = requests.Session()
+        # Hit home page to get cookies
+        session.get(base_url, headers=headers, timeout=10)
+        
+        # Now hit API
+        response = session.get(api_url, headers=headers, timeout=10)
+        
+        if response.ok:
+            data = response.json()
+            # NSE API returns data in 'data' key usually
+            deals = data.get('data', [])
+            if not deals:
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(deals)
+            # Standardize columns for our tracker
+            # Typical NSE columns: 'date', 'clientName', 'type', 'quantity', 'price'
+            return df
+        return None
+    except Exception:
+        return None
+
+
+def read_news_tracker_csv(path: Path) -> pd.DataFrame:
+    """Read or initialize the News & Institutional tracker with detailed March 2026 data."""
+    if path.exists():
+        return pd.read_csv(path)
+    
+    # Pre-populate with user-provided March 2026 data
+    default_data = [
+        # Mutual Funds
+        {"category": "Mutual Fund", "item": "Bandhan Large & Mid Cap", "value": "0.91%", "impact": "1.0", "details": "Highest MF stake: 1,847,267 shares"},
+        {"category": "Mutual Fund", "item": "Tata Resources & Energy", "value": "0.29%", "impact": "0.5", "details": "600,000 shares"},
+        {"category": "Mutual Fund", "item": "Bandhan Small Cap", "value": "0.28%", "impact": "2.0", "details": "Increased holding by 107.93% in Mar 2026"},
+        {"category": "Mutual Fund", "item": "LIC MF Large Cap", "value": "0.22%", "impact": "0.5", "details": "438,384 shares"},
+        {"category": "Mutual Fund", "item": "LIC MF Multi Asset", "value": "0.18%", "impact": "0.5", "details": "369,800 shares"},
+        {"category": "Mutual Fund", "item": "Canara Robeco Mfg", "value": "0.17%", "impact": "0.5", "details": "350,708 shares"},
+        
+        # Institutional ETFs/Global
+        {"category": "Institutional", "item": "iShares MSCI EM ETF", "value": "0.41%", "impact": "0.5", "details": "838,153 shares"},
+        {"category": "Institutional", "item": "DFA Emerging Markets Core", "value": "0.33%", "impact": "0.5", "details": "667,739 shares"},
+        {"category": "Institutional", "item": "Nuveen Int Small Cap", "value": "0.30%", "impact": "0.5", "details": "605,239 shares"},
+        
+        # Recent Actions
+        {"category": "Fund Action", "item": "ABSL Small Cap", "value": "Exited", "impact": "-2.0", "details": "Completely sold off stake (Mar 2026)"},
+        {"category": "Fund Action", "item": "Samco Special Opp", "value": "Exited", "impact": "-1.5", "details": "Exited position (Mar 2026)"},
+        {"category": "News / Deratings", "item": "Negative News / Fund Reports", "value": "Neutral", "impact": "0", "details": "No major negative reports."},
+    ]
+    return pd.DataFrame(default_data)
 
 
 def format_alert_message(
     summary: RegimeSummary,
     scorecard: pd.DataFrame,
     anomalies: pd.DataFrame,
+    prices: Optional[pd.DataFrame] = None,
+    manual_macro: Optional[pd.DataFrame] = None,
+    news_tracker: Optional[pd.DataFrame] = None,
 ) -> str:
     top_positive = scorecard[scorecard["points"] > 0].sort_values("points", ascending=False).head(2)
     top_negative = scorecard[scorecard["points"] < 0].sort_values("points").head(2)
@@ -674,16 +751,75 @@ def format_alert_message(
         f"Regime: {summary.label}",
         f"Score: {summary.normalized_score:.1f}/100 ({summary.score:+.2f})",
         f"Risk tone: {summary.risk_level}",
+        "", # Spacer
     ]
+
+    # Add Technicals
+    if prices is not None and "MOIL" in prices.columns:
+        moil_series = prices["MOIL"].dropna()
+        if not moil_series.empty:
+            latest_price = moil_series.iloc[-1]
+            ma50 = moil_series.rolling(50, min_periods=10).mean().iloc[-1]
+            ma200 = moil_series.rolling(200, min_periods=50).mean().iloc[-1]
+            
+            # Simple Support/Resistance (60-day window)
+            window = 60
+            if len(moil_series) >= window:
+                recent = moil_series.tail(window)
+                support = recent.min()
+                resistance = recent.max()
+            else:
+                support = moil_series.min()
+                resistance = moil_series.max()
+
+            parts.append(f"MOIL Price: {latest_price:.2f}")
+            parts.append(f"S/R: {support:.1f} / {resistance:.1f}")
+            parts.append(f"50/200 DMA: {ma50:.1f} / {ma200:.1f}")
+            parts.append("")
+
+    # Add Manganese Price if available
+    if manual_macro is not None and not manual_macro.empty:
+        # Match indicator case-insensitively
+        try:
+            mn_row = manual_macro[manual_macro["indicator"].str.contains("manganese", case=False, na=False)].iloc[0]
+            val = mn_row.get("value", "N/A")
+            unit = mn_row.get("unit", "")
+            parts.append(f"Manganese Price: {val} {unit}")
+            parts.append("")
+        except (IndexError, KeyError):
+            pass
+
+    # Add News & Institutional Activity
+    if news_tracker is not None and not news_tracker.empty:
+        news_parts = []
+        for _, row in news_tracker.iterrows():
+            item = row.get("item", "Unknown")
+            val = row.get("value", "N/A")
+            details = row.get("details", "")
+            impact = float(row.get("impact", 0))
+            
+            if impact != 0 or val not in ["Neutral", "Stable"]:
+                msg = f"- {item}: {val}"
+                if details and details != "None":
+                    msg += f" ({details})"
+                news_parts.append(msg)
+        
+        if news_parts:
+            parts.append("News & Institutional:")
+            parts.extend(news_parts)
+            parts.append("")
+
     if not top_positive.empty:
         parts.append("Support: " + "; ".join(str(x) for x in top_positive["signal"].tolist()))
     if not top_negative.empty:
         parts.append("Pressure: " + "; ".join(str(x) for x in top_negative["signal"].tolist()))
+    
     if not flagged.empty:
         parts.append(
             "Anomalies: "
             + "; ".join(f"{row['asset']} z={row['z_score']:+.1f}" for _, row in flagged.iterrows())
         )
+    
     parts.append(f"Updated: {summary.updated_at}")
     return "\n".join(parts)
 

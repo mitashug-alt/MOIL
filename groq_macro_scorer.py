@@ -1,6 +1,6 @@
-"""Gemini AI Macro Scoring Module
+"""Groq AI Macro Scoring Module
 
-Handles automatic macro scoring using Google Gemini AI with proper error handling,
+Handles automatic macro scoring using Groq LLM API (free tier) with proper error handling,
 JSON parsing, and fallback mechanisms for the MOIL Macro Radar dashboard.
 """
 
@@ -9,109 +9,131 @@ import os
 from typing import Dict, Any, Optional, List
 
 try:
-    import google.genai as genai
-    HAS_GENAI = True
+    from groq import Groq
+    HAS_GROQ = True
 except ImportError:
-    HAS_GENAI = False
-    genai = None
+    HAS_GROQ = False
+    Groq = None
 
 import pandas as pd
 import streamlit as st
 
 
-def get_gemini_api_key() -> str:
-    """Get the Gemini API key from secrets or environment variables."""
+def get_groq_api_key() -> str:
+    """Get the Groq API key from secrets or environment variables."""
+    def get_secret(name: str) -> str:
+        value = ""
+        try:
+            value = st.secrets.get(name, "")
+        except Exception:
+            value = ""
+        if not value:
+            value = os.getenv(name, "")
+        return str(value or "").strip()
+
     return (
-        st.secrets.get("GEMINI_API_KEY") or
-        st.secrets.get("GOOGLE_API_KEY") or
-        st.secrets.get("API_KEY") or
-        os.getenv("GEMINI_API_KEY") or
-        os.getenv("GOOGLE_API_KEY") or
+        get_secret("GROQ_API_KEY") or
+        get_secret("API_KEY") or
         ""
     )
 
 
-def get_gemini_config() -> Dict[str, str]:
-    """Get Gemini metadata for UI display without exposing the API key."""
-    if st.secrets.get("GEMINI_API_KEY"):
-        key_name = "GEMINI_API_KEY"
-    elif st.secrets.get("GOOGLE_API_KEY"):
-        key_name = "GOOGLE_API_KEY"
-    elif st.secrets.get("API_KEY"):
+def get_groq_config() -> Dict[str, str]:
+    """Get Groq metadata for UI display without exposing the API key."""
+    def get_secret(name: str, default: str = "") -> str:
+        value = ""
+        try:
+            value = st.secrets.get(name, "")
+        except Exception:
+            value = ""
+        if not value:
+            value = os.getenv(name, default)
+        return str(value or "").strip()
+
+    if get_secret("GROQ_API_KEY"):
+        key_name = "GROQ_API_KEY"
+    elif get_secret("API_KEY"):
         key_name = "API_KEY"
     else:
-        key_name = "GEMINI_API_KEY"
+        key_name = "GROQ_API_KEY"
 
     return {
-        "model": st.secrets.get("GEMINI_MODEL", "gemini-1.5-flash"),
-        "project": st.secrets.get("GEMINI_PROJECT", ""),
+        "model": get_secret("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        "project": get_secret("GROQ_PROJECT", ""),
         "key_name": key_name,
     }
 
 
-def is_gemini_configured() -> bool:
-    """Check if Gemini is properly configured."""
-    return bool(get_gemini_api_key() and HAS_GENAI)
+def is_groq_configured() -> bool:
+    """Check if Groq (Groq) is properly configured."""
+    return bool(get_groq_api_key() and HAS_GROQ)
 
 
-def call_gemini_json(prompt: str, model: str = "gemini-1.5-flash") -> Optional[Dict[str, Any]]:
-    """Call Gemini API and return parsed JSON response."""
-    if not is_gemini_configured():
+def call_groq_json(prompt: str, model: str = "llama-3.3-70b-versatile") -> Optional[Dict[str, Any]]:
+    """Call Groq LLM API and return parsed JSON response."""
+    if not is_groq_configured():
         return None
 
     try:
-        api_key = get_gemini_api_key()
-        client = genai.Client(api_key=api_key)
+        api_key = get_groq_api_key()
+        client = Groq(api_key=api_key)
 
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=model,
-            contents=prompt,
-            config=genai.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1,  # Low temperature for consistent scoring
-            )
+            messages=[
+                {"role": "system", "content": "You are a JSON-only API. Always respond with valid JSON, no markdown fences, no extra text."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
 
-        if response and response.text:
-            # Clean the response text
-            text = response.text.strip()
+        if response and response.choices:
+            text = response.choices[0].message.content.strip()
             if text.startswith("```json"):
                 text = text[7:]
             if text.endswith("```"):
                 text = text[:-3]
             text = text.strip()
-
-            # Parse JSON
             return json.loads(text)
         else:
-            st.error("Empty response from Gemini API")
+            st.error("Empty response from Groq API")
             return None
 
     except json.JSONDecodeError as e:
-        st.error(f"Failed to parse Gemini JSON response: {e}")
+        st.error(f"Failed to parse Groq JSON response: {e}")
         return None
     except Exception as e:
-        st.error(f"Gemini API error: {e}")
+        st.error(f"Groq API error: {e}")
         return None
 
 
-def score_macro_with_gemini(
+def score_macro_with_groq(
     manual_macro_df: pd.DataFrame,
     market_snapshot: pd.DataFrame,
-    regime_context: Dict[str, Any]
+    regime_context: Dict[str, Any],
+    news_tracker_df: Optional[pd.DataFrame] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Generate comprehensive macro scoring using Gemini AI."""
+    """Generate comprehensive macro scoring using Groq AI."""
 
     if not manual_macro_df.empty:
         macro_indicators = manual_macro_df.to_dict('records')
     else:
         macro_indicators = []
 
+    # Format news tracker for context
+    news_context = ""
+    if news_tracker_df is not None and not news_tracker_df.empty:
+        news_context = "\nNEWS & INSTITUTIONAL ACTIVITY:\n" + "\n".join([
+            f"- {row['item']} ({row['category']}): {row['value']} (Impact: {row['impact']}) - {row['details']}"
+            for _, row in news_tracker_df.iterrows()
+        ])
+
     # Format market snapshot for context
     market_context = ""
     if not market_snapshot.empty:
         market_context = "\n".join([
-            f"- {row['Asset']}: {row['Close']:.2f} ({row['1D %']:+.2%})"
+            f"- {row['asset']}: {row['latest']:.2f} ({row['1D %']:+.2%})"
             for _, row in market_snapshot.iterrows()
             if pd.notna(row['1D %'])
         ])
@@ -124,6 +146,7 @@ CURRENT MARKET CONTEXT:
 {market_context}
 
 CURRENT REGIME: {regime_context.get('label', 'Unknown')} (Score: {regime_context.get('normalized_score', 50):.1f}/100)
+{news_context}
 
 MACRO INDICATORS TO SCORE:
 {json.dumps(macro_indicators, indent=2)}
@@ -151,12 +174,14 @@ Consider MOIL's exposure to:
 - Energy costs (power stress in production)
 - Freight rates (export competitiveness)
 - USDINR (currency impact on exports)
+- Institutional buy/sell activity (FII/DII sentiment)
+- Recent fund deratings or negative news flow
 
 Be quantitative and specific in your analysis. Focus on actionable insights for commodity trading desks.
 
 Return your analysis as a valid JSON object with the exact structure specified above."""
 
-    result = call_gemini_json(prompt)
+    result = call_groq_json(prompt)
 
     if result:
         # Validate the response structure
@@ -164,7 +189,7 @@ Return your analysis as a valid JSON object with the exact structure specified a
         if all(key in result for key in required_keys):
             return result
         else:
-            st.error(f"Gemini response missing required keys. Got: {list(result.keys())}")
+            st.error(f"Groq response missing required keys. Got: {list(result.keys())}")
             return None
     else:
         return None
@@ -173,9 +198,42 @@ Return your analysis as a valid JSON object with the exact structure specified a
 
 
 
-def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
+def extract_news_updates(raw_news_text: str) -> Optional[List[Dict[str, Any]]]:
+    """Use Groq to extract structured fund activity and news from raw text."""
+    if not is_groq_configured() or not raw_news_text.strip():
+        return None
+
+    prompt = f"""
+You are an institutional data extractor. Extract mutual fund holdings, institutional investor actions (buy/sell/exit), and negative news/deratings for MOIL Ltd from the raw text below.
+
+RAW TEXT:
+{raw_news_text}
+
+RULES:
+- Extract specific fund names.
+- Identify the category: "Mutual Fund", "Institutional", "Fund Action", or "News / Deratings".
+- Identify the value (e.g., stake %, "Exited", "Bought").
+- Estimate impact: -2.0 (very negative) to +2.0 (very positive).
+- Provide context in the "details" field.
+- Return ONLY a JSON list of objects.
+
+JSON STRUCTURE:
+[
+  {{"category": "Mutual Fund", "item": "Fund Name", "value": "0.5%", "impact": 0.5, "details": "context"}},
+  ...
+]
+"""
+    result = call_groq_json(prompt)
+    if isinstance(result, list):
+        return result
+    elif isinstance(result, dict) and "updates" in result:
+        return result["updates"]
+    return None
+
+
+def generate_groq_commentary(context: dict | None = None, **kwargs) -> dict:
     """
-    Generate Gemini commentary for MOIL Macro Radar.
+    Generate Groq commentary for MOIL Macro Radar using Groq LLM.
 
     Returns a safe dictionary:
     {
@@ -199,7 +257,7 @@ def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
         st = None
 
     try:
-        from google import genai
+        from groq import Groq
     except Exception as exc:
         return {
             "ok": False,
@@ -207,7 +265,7 @@ def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
             "institutional_commentary": "",
             "watchlist_triggers": [],
             "raw_text": "",
-            "error": f"google-genai is not installed or could not be imported: {exc}",
+            "error": f"groq is not installed or could not be imported: {exc}",
         }
 
     def get_secret(name: str, default: str = "") -> str:
@@ -243,8 +301,16 @@ def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
     if kwargs:
         context.update(kwargs)
 
-    api_key = get_secret("GEMINI_API_KEY")
-    model = get_secret("GEMINI_MODEL", "gemini-2.5-flash")
+    # Include news tracker in context if provided
+    if "news_tracker" in context:
+        news_df = context["news_tracker"]
+        if isinstance(news_df, pd.DataFrame) and not news_df.empty:
+            context["news_summary"] = news_df.to_dict('records')
+            # Don't pass the raw dataframe to json.dumps later
+            del context["news_tracker"]
+
+    api_key = get_secret("GROQ_API_KEY")
+    model = get_secret("GROQ_MODEL", "llama-3.3-70b-versatile")
 
     if not api_key:
         return {
@@ -253,7 +319,7 @@ def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
             "institutional_commentary": "",
             "watchlist_triggers": [],
             "raw_text": "",
-            "error": "Gemini API key is not configured. Set GEMINI_API_KEY in Streamlit secrets or environment variables.",
+            "error": "Groq API key is not configured. Set GROQ_API_KEY in Streamlit secrets or environment variables.",
         }
 
     prompt = f"""
@@ -286,13 +352,18 @@ Return this exact JSON structure:
 """
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
             model=model,
-            contents=prompt,
+            messages=[
+                {"role": "system", "content": "You are a JSON-only API. Always respond with valid JSON, no markdown fences, no extra text."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
 
-        raw_text = getattr(response, "text", "") or ""
+        raw_text = response.choices[0].message.content if response.choices else ""
         clean_text = strip_json_fences(raw_text)
 
         try:
@@ -304,7 +375,7 @@ Return this exact JSON structure:
                 "institutional_commentary": "",
                 "watchlist_triggers": [],
                 "raw_text": raw_text,
-                "error": "Gemini returned non-JSON text. Raw response captured.",
+                "error": "Groq returned non-JSON text. Raw response captured.",
             }
 
         return {
@@ -323,5 +394,5 @@ Return this exact JSON structure:
             "institutional_commentary": "",
             "watchlist_triggers": [],
             "raw_text": "",
-            "error": f"Gemini commentary failed: {exc}",
+            "error": f"Groq commentary failed: {exc}",
         }
