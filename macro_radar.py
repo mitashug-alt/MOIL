@@ -19,6 +19,8 @@ try:
 except ModuleNotFoundError:  # Allows offline tests before requirements are installed.
     yf = None
 
+from gemini_macro_scorer import generate_gemini_commentary, score_macro_with_gemini
+
 
 DEFAULT_MARKET_TICKERS: Dict[str, str] = {
     "MOIL": "MOIL.NS",
@@ -30,8 +32,8 @@ DEFAULT_MARKET_TICKERS: Dict[str, str] = {
     "Brent Crude": "BZ=F",
     "USDINR": "INR=X",
     # Yahoo coverage for physical freight indices can vary by geography/version.
-    # Keep this configurable in the dashboard; BDIY is retained as the default proxy.
-    "Baltic Dry Proxy": "BDIY",
+    # Keep this configurable in the dashboard; BDRY is retained as the default proxy.
+    "Baltic Dry Proxy": "BDRY",
 }
 
 STEEL_PEERS = ["JSW Steel", "SAIL", "Tata Steel"]
@@ -370,6 +372,10 @@ def detect_return_anomalies(prices: pd.DataFrame, window: int = 60, threshold: f
     return pd.DataFrame(rows).sort_values("z_score", key=lambda s: s.abs(), ascending=False)
 
 
+# Alias for app.py compatibility
+detect_anomalies = detect_return_anomalies
+
+
 def read_manual_macro_csv(path: Path | str) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
@@ -471,6 +477,7 @@ def classify_regime(normalized_score: float) -> Tuple[str, str]:
 def compute_regime_score(
     prices: pd.DataFrame,
     manual_macro: Optional[pd.DataFrame] = None,
+    gemini_scores: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, RegimeSummary]:
     """Compute a transparent composite regime score.
 
@@ -515,21 +522,35 @@ def compute_regime_score(
     score, rationale = _series_score_above_ma(prices, "Baltic Dry Proxy", 50, 0.75, True)
     _score_component(components, "Freight / bulk cycle", "Baltic Dry proxy vs 50DMA", score, 0.75, rationale)
 
+    # Manual macro indicators
     if manual_macro is not None and not manual_macro.empty:
-        manual = normalize_manual_macro(manual_macro)
-        for _, row in manual.iterrows():
-            indicator = str(row.get("indicator", "Manual indicator")).strip() or "Manual indicator"
-            points = float(row.get("score", 0))
-            status = str(row.get("status", "neutral")).strip() or "neutral"
-            note = str(row.get("commentary", "")).strip()
-            _score_component(
-                components,
-                "Manual physical macro",
-                f"{indicator} ({status})",
-                points,
-                2.0,
-                note or "Manual score from physical/industry tracker.",
-            )
+        # Use Gemini scores if available, otherwise manual scores
+        if gemini_scores and "macro_scores" in gemini_scores:
+            for gemini_score in gemini_scores["macro_scores"]:
+                indicator = gemini_score.get("indicator", "")
+                score = gemini_score.get("score", 0)
+                rationale = gemini_score.get("rationale", "Gemini AI assessment")
+                _score_component(
+                    "Manual Macro (Gemini)",
+                    f"{indicator} (AI)",
+                    score,
+                    2.0,
+                    rationale,
+                )
+        else:
+            manual = normalize_manual_macro(manual_macro)
+            for _, row in manual.iterrows():
+                indicator = str(row.get("indicator", "Manual indicator")).strip() or "Manual indicator"
+                points = float(row.get("score", 0))
+                status = str(row.get("status", "neutral")).strip() or "neutral"
+                note = str(row.get("commentary", "")).strip()
+                _score_component(
+                    "Manual physical macro",
+                    f"{indicator} ({status})",
+                    points,
+                    2.0,
+                    note or "Manual score from physical/industry tracker.",
+                )
 
     scorecard = pd.DataFrame(components)
     if scorecard.empty:
@@ -616,38 +637,25 @@ def generate_rule_based_commentary(
     return "\n\n".join(lines)
 
 
-def generate_openai_commentary(
-    api_key: str,
-    model: str,
+def generate_gemini_commentary_wrapper(
     summary: RegimeSummary,
     scorecard: pd.DataFrame,
     moil_corr: pd.DataFrame,
     anomalies: pd.DataFrame,
 ) -> str:
-    """Optional LLM commentary. Falls back gracefully if the OpenAI package/API is unavailable."""
-    if not api_key:
-        return ""
-    try:
-        from openai import OpenAI
+    """Generate Gemini commentary for the dashboard."""
+    context = {
+        "regime_label": summary.label,
+        "regime_score": summary.normalized_score,
+        "manual_macro_score": 0,  # Could be calculated from scorecard
+        "top_correlations": moil_corr.head(3).to_dict('records') if not moil_corr.empty else [],
+        "anomalies": anomalies.head(5).to_dict('records') if not anomalies.empty else [],
+    }
+    return generate_gemini_commentary(context) or generate_rule_based_commentary(summary, scorecard, moil_corr, anomalies)
 
-        client = OpenAI(api_key=api_key)
-        score_json = scorecard.to_dict(orient="records")
-        corr_json = moil_corr.head(6).to_dict(orient="records") if not moil_corr.empty else []
-        anomaly_json = anomalies.head(8).to_dict(orient="records") if not anomalies.empty else []
-        prompt = f"""
-You are writing for an Indian institutional commodities desk tracking MOIL.
-Produce a compact dashboard note with: regime view, drivers, risks, and actions.
-Avoid investment advice wording. Use only the supplied data.
 
-Regime summary: {summary}
-Scorecard rows: {score_json}
-MOIL correlations: {corr_json}
-Anomalies: {anomaly_json}
-""".strip()
-        response = client.responses.create(model=model, input=prompt)
-        return getattr(response, "output_text", "").strip()
-    except Exception as exc:  # pragma: no cover - external service path
-        return f"AI commentary unavailable: {type(exc).__name__}: {exc}"
+# Legacy alias for backward compatibility
+generate_openai_commentary = generate_gemini_commentary_wrapper
 
 
 def format_alert_message(
@@ -676,3 +684,7 @@ def format_alert_message(
         )
     parts.append(f"Updated: {summary.updated_at}")
     return "\n".join(parts)
+
+
+# Alias for app.py compatibility
+build_telegram_alert_text = format_alert_message

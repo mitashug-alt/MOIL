@@ -13,7 +13,7 @@ Institutional-grade commodity intelligence dashboard focused on MOIL, Indian ste
 - Manual physical macro tracker for silico-manganese prices, India crude steel production, China steel exports and China power/industrial stress
 - Return anomaly monitor using rolling z-scores
 - Telegram alert preview and push button
-- Rule-based macro commentary by default, with optional OpenAI commentary when credentials are supplied
+- Rule-based macro commentary by default, with optional Google Gemini commentary when credentials are supplied
 - Downloadable price panel, manual macro CSV and regime scorecard
 - Feed placeholder structure for Reuters / SteelMint / internal data connectors
 
@@ -48,8 +48,8 @@ Supported optional secrets:
 ```toml
 TELEGRAM_BOT_TOKEN = ""
 TELEGRAM_CHAT_ID = ""
-OPENAI_API_KEY = ""
-OPENAI_MODEL = "gpt-4o-mini"
+API_KEY = ""
+GOOGLE_API_KEY = ""
 ```
 
 Never commit real credentials.
