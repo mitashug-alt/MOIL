@@ -18,6 +18,7 @@ from gemini_macro_scorer import (
     get_gemini_config,
     is_gemini_configured,
     score_macro_with_gemini,
+    generate_gemini_commentary,
 )
 from macro_radar import (
     DEFAULT_MARKET_TICKERS,

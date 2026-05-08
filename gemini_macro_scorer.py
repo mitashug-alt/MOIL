@@ -218,18 +218,155 @@ Keep it concise, quantitative, and focused on actionable insights for institutio
         return None
 
 
-def generate_gemini_commentary_wrapper(context: Dict[str, Any]) -> str:
-    """Wrapper for Gemini commentary with fallback to rule-based."""
-    commentary = generate_gemini_commentary(context)
+def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
+    """
+    Generate Gemini commentary for MOIL Macro Radar.
 
-    if commentary:
-        return commentary
-    else:
-        # Fallback to rule-based commentary
-        from macro_radar import generate_rule_based_commentary
-        return "Gemini commentary unavailable. Using rule-based analysis.\n\n" + generate_rule_based_commentary(
-            context.get("summary"),
-            context.get("scorecard", pd.DataFrame()),
-            context.get("moil_corr", pd.DataFrame()),
-            context.get("anomalies", pd.DataFrame())
+    Returns a safe dictionary:
+    {
+        "ok": bool,
+        "telegram_alert": str,
+        "institutional_commentary": str,
+        "watchlist_triggers": list,
+        "raw_text": str,
+        "error": str
+    }
+
+    This function never displays or logs the API key.
+    """
+    import json
+    import os
+    import re
+
+    try:
+        import streamlit as st
+    except Exception:
+        st = None
+
+    try:
+        from google import genai
+    except Exception as exc:
+        return {
+            "ok": False,
+            "telegram_alert": "",
+            "institutional_commentary": "",
+            "watchlist_triggers": [],
+            "raw_text": "",
+            "error": f"google-genai is not installed or could not be imported: {exc}",
+        }
+
+    def get_secret(name: str, default: str = "") -> str:
+        value = ""
+
+        if st is not None:
+            try:
+                value = st.secrets.get(name, "")
+            except Exception:
+                value = ""
+
+        if not value:
+            value = os.getenv(name, default)
+
+        return str(value or "").strip()
+
+    def strip_json_fences(text: str) -> str:
+        text = (text or "").strip()
+
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"```$", "", text).strip()
+
+        start = text.find("{")
+        end = text.rfind("}")
+
+        if start != -1 and end != -1 and end > start:
+            return text[start : end + 1]
+
+        return text
+
+    context = context or {}
+    if kwargs:
+        context.update(kwargs)
+
+    api_key = get_secret("GEMINI_API_KEY")
+    model = get_secret("GEMINI_MODEL", "gemini-2.5-flash")
+
+    if not api_key:
+        return {
+            "ok": False,
+            "telegram_alert": "",
+            "institutional_commentary": "",
+            "watchlist_triggers": [],
+            "raw_text": "",
+            "error": "Gemini API key is not configured. Set GEMINI_API_KEY in Streamlit secrets or environment variables.",
+        }
+
+    prompt = f"""
+You are an institutional commodity and equity-cycle analyst writing for the MOIL Macro Radar.
+
+Task:
+Generate macro commentary for MOIL Ltd using only the dashboard context below.
+
+Rules:
+- Do not give direct buy/sell advice.
+- Do not hallucinate missing values.
+- Be concise, institutional, and risk-aware.
+- Focus on manganese, silico-manganese, ferroalloys, Indian steel demand, China exports, Brent, USDINR, freight, and commodity-cycle regime.
+- Return valid JSON only.
+- No markdown fences.
+
+Dashboard context:
+{json.dumps(context, indent=2, default=str)}
+
+Return this exact JSON structure:
+{{
+  "telegram_alert": "Telegram-ready alert under 150 words",
+  "institutional_commentary": "Longer institutional commentary in 2-4 paragraphs",
+  "watchlist_triggers": [
+    "Trigger 1",
+    "Trigger 2",
+    "Trigger 3"
+  ]
+}}
+"""
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
         )
+
+        raw_text = getattr(response, "text", "") or ""
+        clean_text = strip_json_fences(raw_text)
+
+        try:
+            parsed = json.loads(clean_text)
+        except Exception:
+            return {
+                "ok": False,
+                "telegram_alert": "",
+                "institutional_commentary": "",
+                "watchlist_triggers": [],
+                "raw_text": raw_text,
+                "error": "Gemini returned non-JSON text. Raw response captured.",
+            }
+
+        return {
+            "ok": True,
+            "telegram_alert": str(parsed.get("telegram_alert", "")).strip(),
+            "institutional_commentary": str(parsed.get("institutional_commentary", "")).strip(),
+            "watchlist_triggers": parsed.get("watchlist_triggers", []),
+            "raw_text": raw_text,
+            "error": "",
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "telegram_alert": "",
+            "institutional_commentary": "",
+            "watchlist_triggers": [],
+            "raw_text": "",
+            "error": f"Gemini commentary failed: {exc}",
+        }
