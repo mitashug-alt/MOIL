@@ -531,6 +531,7 @@ def compute_regime_score(
                 score = gemini_score.get("score", 0)
                 rationale = gemini_score.get("rationale", "Gemini AI assessment")
                 _score_component(
+                    components,
                     "Manual Macro (Gemini)",
                     f"{indicator} (AI)",
                     score,
@@ -545,11 +546,12 @@ def compute_regime_score(
                 status = str(row.get("status", "neutral")).strip() or "neutral"
                 note = str(row.get("commentary", "")).strip()
                 _score_component(
+                    components,
                     "Manual physical macro",
                     f"{indicator} ({status})",
                     points,
                     2.0,
-                    note or "Manual score from physical/industry tracker.",
+                    note,
                 )
 
     scorecard = pd.DataFrame(components)

@@ -170,52 +170,7 @@ Return your analysis as a valid JSON object with the exact structure specified a
         return None
 
 
-def generate_gemini_commentary(context: Dict[str, Any]) -> Optional[str]:
-    """Generate AI commentary using Gemini."""
 
-    prompt = f"""You are a commodities desk analyst writing a concise macro alert for MOIL Ltd.
-
-CURRENT REGIME: {context.get('regime_label', 'Unknown')} (Score: {context.get('regime_score', 50):.1f}/100)
-MANUAL MACRO SCORE: {context.get('manual_macro_score', 0):+.2f}
-
-TOP CORRELATIONS:
-{chr(10).join([f"- {item['asset']}: {item['correlation_to_moil']:+.2f}" for item in context.get('top_correlations', [])])}
-
-ANOMALIES DETECTED:
-{chr(10).join([f"- {item['asset']}: {item['latest_return_%']:+.2%} (z-score: {item['z_score']:+.2f})" for item in context.get('anomalies', [])])}
-
-Write a 2-3 paragraph dashboard note covering:
-1. Current regime assessment and momentum
-2. Key supportive and adverse signals from correlations and anomalies
-3. Top risks and recommended positioning for MOIL exposure
-
-Keep it concise, quantitative, and focused on actionable insights for institutional investors."""
-
-    if not is_gemini_configured():
-        return None
-
-    try:
-        api_key = get_gemini_api_key()
-        client = genai.Client(api_key=api_key)
-
-        config = get_gemini_config()
-        response = client.models.generate_content(
-            model=config["model"],
-            contents=prompt,
-            config=genai.GenerateContentConfig(
-                temperature=0.3,
-                max_output_tokens=1000,
-            )
-        )
-
-        if response and response.text:
-            return response.text.strip()
-        else:
-            return None
-
-    except Exception as e:
-        st.error(f"Gemini commentary error: {e}")
-        return None
 
 
 def generate_gemini_commentary(context: dict | None = None, **kwargs) -> dict:
