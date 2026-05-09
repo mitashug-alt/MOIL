@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-plotly
-yfinance
-requests
-google-genai
+streamlit>=1.32
+pandas>=2.0
+numpy>=1.24
+plotly>=5.18
+yfinance>=0.2.40
+requests>=2.31
+groq>=0.9.0

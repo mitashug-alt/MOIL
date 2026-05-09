@@ -1,25 +1,24 @@
-"""Core analytics for the MOIL Macro Radar dashboard.
+"""Core analytics for MOIL Macro Radar.
 
-The module is intentionally UI-light so it can be tested independently from Streamlit.
-It combines live Yahoo Finance market proxies with manually maintained industrial
-series such as silico-manganese prices, India steel production and China steel exports.
+The module intentionally separates market analytics from Streamlit UI so the
+same logic can be used in local Windows runs, GitHub Codespaces and future
+scheduled jobs.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
 try:
     import yfinance as yf
-except ModuleNotFoundError:  # Allows offline tests before requirements are installed.
+except ModuleNotFoundError:  # allows imports before requirements are installed
     yf = None
-
-from gemini_macro_scorer import generate_gemini_commentary, score_macro_with_gemini
 
 
 DEFAULT_MARKET_TICKERS: Dict[str, str] = {
@@ -31,71 +30,38 @@ DEFAULT_MARKET_TICKERS: Dict[str, str] = {
     "Hindustan Zinc": "HINDZINC.NS",
     "Brent Crude": "BZ=F",
     "USDINR": "INR=X",
-    # Yahoo coverage for physical freight indices can vary by geography/version.
-    # Keep this configurable in the dashboard; BDRY is retained as the default proxy.
     "Baltic Dry Proxy": "BDRY",
 }
 
 STEEL_PEERS = ["JSW Steel", "SAIL", "Tata Steel"]
-MANUAL_INDICATOR_TEMPLATE = pd.DataFrame(
-    [
-        {
-            "date": "",
-            "indicator": "Silico-Manganese Prices",
-            "value": "",
-            "unit": "INR/t or USD/t",
-            "status": "neutral",
-            "score": 0,
-            "commentary": "Enter latest weekly price direction/spread signal.",
-            "source": "Manual / SteelMint / broker note",
-        },
-        {
-            "date": "",
-            "indicator": "India Crude Steel Production",
-            "value": "",
-            "unit": "Mt or YoY %",
-            "status": "neutral",
-            "score": 0,
-            "commentary": "Positive when output and capacity utilization are rising.",
-            "source": "Manual / industry association",
-        },
-        {
-            "date": "",
-            "indicator": "China Steel Exports",
-            "value": "",
-            "unit": "Mt or YoY %",
-            "status": "neutral",
-            "score": 0,
-            "commentary": "Positive for MOIL when export pressure/dumping risk is easing.",
-            "source": "Manual / customs / Reuters placeholder",
-        },
-        {
-            "date": "",
-            "indicator": "China Power / Industrial Stress",
-            "value": "",
-            "unit": "qualitative",
-            "status": "neutral",
-            "score": 0,
-            "commentary": "Positive when stress constrains Chinese supply or exports.",
-            "source": "Manual / news placeholder",
-        },
-    ]
-)
+CORE_TICKERS = ["MOIL", "NIFTY Metal", "JSW Steel", "SAIL", "Tata Steel", "Brent Crude", "USDINR"]
 
 
 @dataclass(frozen=True)
 class RegimeSummary:
-    score: float
+    raw_score: float
     max_score: float
     min_score: float
     normalized_score: float
     label: str
     risk_level: str
+    alert_level: str
+    confidence_score: float
+    data_quality_score: float
     updated_at: str
 
+    @property
+    def score(self) -> float:
+        """Backwards-compatible alias for older app versions."""
+        return self.raw_score
 
-def _clean_name(name: str) -> str:
-    return str(name).strip()
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _clean_name(name: object) -> str:
+    return str(name or "").strip()
 
 
 def _empty_ohlcv() -> pd.DataFrame:
@@ -108,33 +74,30 @@ def normalize_yfinance_frame(frame: pd.DataFrame, ticker: str) -> pd.DataFrame:
         return _empty_ohlcv()
 
     df = frame.copy()
-
     if isinstance(df.columns, pd.MultiIndex):
-        # yfinance can return either price-field first or ticker first. Handle both.
-        levels = [list(map(str, level)) for level in df.columns.levels]
         ticker_str = str(ticker)
+        levels = [list(map(str, level)) for level in df.columns.levels]
         try:
             if ticker_str in levels[0]:
                 df = df.xs(ticker, axis=1, level=0)
             elif ticker_str in levels[1]:
                 df = df.xs(ticker, axis=1, level=1)
             else:
-                # Single-ticker downloads sometimes have a redundant second level.
                 df.columns = df.columns.get_level_values(0)
         except Exception:
             df.columns = df.columns.get_level_values(0)
 
-    df = df.rename(columns={str(col): str(col).strip() for col in df.columns})
+    df = df.rename(columns={col: str(col).strip() for col in df.columns})
     standard_cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
     for col in standard_cols:
         if col not in df.columns:
             df[col] = np.nan
 
-    df = df[standard_cols]
+    df = df[standard_cols].copy()
     df.index = pd.to_datetime(df.index, errors="coerce")
-    df = df[~df.index.isna()]
-    df = df.sort_index()
+    df = df[~df.index.isna()].sort_index()
     df = df[~df.index.duplicated(keep="last")]
+
     for col in standard_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -151,8 +114,8 @@ def fetch_market_data(
 ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, str]]:
     """Download market data from yfinance.
 
-    Returns a tuple of {asset_name: dataframe} and {asset_name: error_message}.
-    Individual failures are isolated so one broken ticker does not break the dashboard.
+    Individual feed failures are isolated so one broken ticker does not break
+    the whole dashboard.
     """
     data: Dict[str, pd.DataFrame] = {}
     errors: Dict[str, str] = {}
@@ -179,22 +142,17 @@ def fetch_market_data(
                 errors[clean_name] = f"No close-price data returned for {clean_ticker}."
             else:
                 data[clean_name] = df
-        except Exception as exc:  # pragma: no cover - depends on network/provider
+        except Exception as exc:  # provider/network specific
             errors[clean_name] = f"{type(exc).__name__}: {exc}"
 
     return data, errors
 
 
-def generate_demo_market_data(
-    names: Iterable[str],
-    periods: int = 520,
-    seed: int = 7,
-) -> Dict[str, pd.DataFrame]:
-    """Create deterministic synthetic data for demos/tests when live feeds are unavailable."""
+def generate_demo_market_data(names: Iterable[str], periods: int = 520, seed: int = 7) -> Dict[str, pd.DataFrame]:
+    """Create deterministic synthetic data for demos/tests when live feeds fail."""
     rng = np.random.default_rng(seed)
     dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=periods)
     output: Dict[str, pd.DataFrame] = {}
-
     base_levels = {
         "MOIL": 420,
         "NIFTY Metal": 9000,
@@ -204,12 +162,11 @@ def generate_demo_market_data(
         "Hindustan Zinc": 500,
         "Brent Crude": 82,
         "USDINR": 83,
-        "Baltic Dry Proxy": 1800,
+        "Baltic Dry Proxy": 12,
     }
     common_cycle = rng.normal(0.00035, 0.011, size=len(dates)).cumsum()
-
     for i, name in enumerate(names):
-        base = base_levels.get(name, 100 + 25 * i)
+        base = base_levels.get(str(name), 100 + 25 * i)
         beta = 1.0 if name in {"MOIL", "NIFTY Metal", "JSW Steel", "SAIL", "Tata Steel"} else 0.35
         idio = rng.normal(0.0001, 0.014 + 0.002 * (i % 3), size=len(dates)).cumsum()
         level = base * np.exp(beta * common_cycle + idio)
@@ -218,7 +175,7 @@ def generate_demo_market_data(
         high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0.004, 0.003, len(dates))))
         low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0.004, 0.003, len(dates))))
         volume = rng.integers(100_000, 2_500_000, len(dates))
-        output[name] = pd.DataFrame(
+        output[str(name)] = pd.DataFrame(
             {
                 "Open": open_.values,
                 "High": high.values,
@@ -229,7 +186,6 @@ def generate_demo_market_data(
             },
             index=dates,
         )
-
     return output
 
 
@@ -239,10 +195,24 @@ def build_price_panel(data: Mapping[str, pd.DataFrame], field: str = "Close") ->
         if df is None or df.empty or field not in df.columns:
             continue
         prices[_clean_name(name)] = pd.to_numeric(df[field], errors="coerce")
+    if prices.empty:
+        return prices
     prices.index = pd.to_datetime(prices.index, errors="coerce")
     prices = prices[~prices.index.isna()].sort_index()
-    prices = prices.dropna(how="all")
-    return prices
+    return prices.dropna(how="all")
+
+
+def build_volume_panel(data: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    volumes = pd.DataFrame()
+    for name, df in data.items():
+        if df is None or df.empty or "Volume" not in df.columns:
+            continue
+        volumes[_clean_name(name)] = pd.to_numeric(df["Volume"], errors="coerce")
+    if volumes.empty:
+        return volumes
+    volumes.index = pd.to_datetime(volumes.index, errors="coerce")
+    volumes = volumes[~volumes.index.isna()].sort_index()
+    return volumes.dropna(how="all")
 
 
 def normalize_to_100(prices: pd.DataFrame) -> pd.DataFrame:
@@ -250,11 +220,11 @@ def normalize_to_100(prices: pd.DataFrame) -> pd.DataFrame:
         return prices.copy()
     normalized = prices.copy()
     for col in normalized.columns:
-        first_valid = normalized[col].dropna()
-        if first_valid.empty or first_valid.iloc[0] == 0:
+        clean = normalized[col].dropna()
+        if clean.empty or clean.iloc[0] == 0:
             normalized[col] = np.nan
         else:
-            normalized[col] = normalized[col] / first_valid.iloc[0] * 100
+            normalized[col] = normalized[col] / clean.iloc[0] * 100
     return normalized
 
 
@@ -282,7 +252,18 @@ def _pct_change(series: pd.Series, periods: int) -> Optional[float]:
     return latest / prev - 1
 
 
-def metric_snapshot(prices: pd.DataFrame) -> pd.DataFrame:
+def _distance_to_ma(series: pd.Series, window: int, min_periods: int) -> Optional[float]:
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    if len(clean) < min_periods:
+        return None
+    ma = clean.rolling(window, min_periods=min_periods).mean().iloc[-1]
+    latest = clean.iloc[-1]
+    if pd.isna(ma) or ma == 0:
+        return None
+    return float(latest / ma - 1)
+
+
+def metric_snapshot(prices: pd.DataFrame, volumes: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     rows: List[Dict[str, object]] = []
     returns = compute_returns(prices)
     for name in prices.columns:
@@ -294,18 +275,28 @@ def metric_snapshot(prices: pd.DataFrame) -> pd.DataFrame:
         mtd = None
         try:
             current_month = series.index[-1].to_period("M")
-            month_start = series[series.index.to_period("M") == current_month]
-            if len(month_start) > 1 and month_start.iloc[0] != 0:
-                mtd = float(series.iloc[-1] / month_start.iloc[0] - 1)
+            month_series = series[series.index.to_period("M") == current_month]
+            if len(month_series) > 1 and month_series.iloc[0] != 0:
+                mtd = float(series.iloc[-1] / month_series.iloc[0] - 1)
         except Exception:
             mtd = None
         ret_20d = _pct_change(series, 20)
         ret_63d = _pct_change(series, 63)
-        ma50 = series.rolling(50, min_periods=30).mean().iloc[-1] if len(series) >= 30 else np.nan
-        ma200 = series.rolling(200, min_periods=100).mean().iloc[-1] if len(series) >= 100 else np.nan
-        dist_50 = None if pd.isna(ma50) or ma50 == 0 or latest is None else latest / float(ma50) - 1
-        dist_200 = None if pd.isna(ma200) or ma200 == 0 or latest is None else latest / float(ma200) - 1
+        dist_50 = _distance_to_ma(series, 50, 30)
+        dist_200 = _distance_to_ma(series, 200, 100)
         vol_20 = returns[name].rolling(20, min_periods=10).std().iloc[-1] if name in returns else np.nan
+
+        rel_volume = np.nan
+        volume_z = np.nan
+        if volumes is not None and name in volumes.columns:
+            v = pd.to_numeric(volumes[name], errors="coerce").replace(0, np.nan).dropna()
+            if len(v) >= 20:
+                avg20 = v.rolling(20, min_periods=10).mean().iloc[-1]
+                std60 = v.rolling(60, min_periods=20).std().iloc[-1] if len(v) >= 20 else np.nan
+                mean60 = v.rolling(60, min_periods=20).mean().iloc[-1] if len(v) >= 20 else np.nan
+                rel_volume = float(v.iloc[-1] / avg20) if avg20 and not pd.isna(avg20) else np.nan
+                volume_z = float((v.iloc[-1] - mean60) / std60) if std60 and not pd.isna(std60) else np.nan
+
         rows.append(
             {
                 "asset": name,
@@ -316,377 +307,693 @@ def metric_snapshot(prices: pd.DataFrame) -> pd.DataFrame:
                 "63D %": ret_63d,
                 "vs 50DMA %": dist_50,
                 "vs 200DMA %": dist_200,
-                "20D vol ann. %": None if pd.isna(vol_20) else float(vol_20) * np.sqrt(252),
-                "last_date": series.index[-1].date().isoformat(),
+                "20D vol ann.": None if pd.isna(vol_20) else float(vol_20 * np.sqrt(252)),
+                "relative_volume": rel_volume,
+                "volume_z_score": volume_z,
+                "last_date": series.index[-1].strftime("%Y-%m-%d"),
             }
         )
     return pd.DataFrame(rows)
 
 
-def correlation_matrix(prices: pd.DataFrame, lookback: int = 90, method: str = "pearson") -> pd.DataFrame:
-    returns = compute_returns(prices)
-    if lookback and lookback > 0:
-        returns = returns.tail(lookback)
-    return returns.corr(method=method).round(3)
+def correlation_matrix(prices: pd.DataFrame, lookback: int = 90) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame()
+    returns = compute_returns(prices).tail(lookback)
+    returns = returns.dropna(axis=1, how="all")
+    if returns.shape[1] < 2:
+        return pd.DataFrame()
+    return returns.corr(min_periods=max(10, min(30, lookback // 2)))
 
 
-def rolling_correlation(
-    prices: pd.DataFrame,
-    base: str,
-    peer: str,
-    window: int = 60,
-) -> pd.Series:
-    returns = compute_returns(prices)
-    if base not in returns or peer not in returns:
-        return pd.Series(dtype=float)
-    return returns[base].rolling(window, min_periods=max(10, window // 3)).corr(returns[peer])
-
-
-def moil_correlation_table(corr: pd.DataFrame, base: str = "MOIL") -> pd.DataFrame:
-    if corr.empty or base not in corr.columns:
+def compute_moil_correlation_ranking(prices: pd.DataFrame, lookback: int = 90) -> pd.DataFrame:
+    corr = correlation_matrix(prices, lookback)
+    if corr.empty or "MOIL" not in corr.columns:
         return pd.DataFrame(columns=["asset", "correlation_to_moil"])
-    values = corr[base].drop(labels=[base], errors="ignore").dropna().sort_values(ascending=False)
-    return values.rename("correlation_to_moil").reset_index().rename(columns={"index": "asset"})
+    ranking = corr.loc["MOIL"].drop(labels=["MOIL"], errors="ignore").dropna().sort_values(ascending=False)
+    return ranking.reset_index().rename(columns={"index": "asset", "MOIL": "correlation_to_moil"})
 
 
-def detect_return_anomalies(prices: pd.DataFrame, window: int = 60, threshold: float = 2.5) -> pd.DataFrame:
-    returns = compute_returns(prices)
-    rows: List[Dict[str, object]] = []
-    for col in returns.columns:
-        series = returns[col].dropna()
-        if len(series) < max(15, window // 2):
-            continue
-        mean = series.rolling(window, min_periods=max(15, window // 2)).mean().iloc[-1]
-        std = series.rolling(window, min_periods=max(15, window // 2)).std().iloc[-1]
-        latest = float(series.iloc[-1])
-        z = 0.0 if pd.isna(std) or std == 0 else float((latest - mean) / std)
-        rows.append(
-            {
-                "asset": col,
-                "latest_return_%": latest,
-                "z_score": z,
-                "flag": "ANOMALY" if abs(z) >= threshold else "normal",
-                "direction": "upside" if z > 0 else "downside" if z < 0 else "flat",
-            }
-        )
-    return pd.DataFrame(rows).sort_values("z_score", key=lambda s: s.abs(), ascending=False)
+def rolling_correlation(prices: pd.DataFrame, left: str, right: str, window: int = 60) -> pd.Series:
+    if prices.empty or left not in prices.columns or right not in prices.columns:
+        return pd.Series(dtype=float)
+    returns = compute_returns(prices[[left, right]])
+    return returns[left].rolling(window, min_periods=max(10, window // 2)).corr(returns[right]).dropna()
 
 
-# Alias for app.py compatibility
-detect_anomalies = detect_return_anomalies
-
-
-def read_manual_macro_csv(path: Path | str) -> pd.DataFrame:
-    path = Path(path)
-    if not path.exists():
-        return MANUAL_INDICATOR_TEMPLATE.copy()
-    try:
-        df = pd.read_csv(path)
-    except Exception:
-        return MANUAL_INDICATOR_TEMPLATE.copy()
-    return normalize_manual_macro(df)
-
-
-def normalize_manual_macro(df: pd.DataFrame) -> pd.DataFrame:
-    template_cols = list(MANUAL_INDICATOR_TEMPLATE.columns)
-    if df is None or df.empty:
-        return MANUAL_INDICATOR_TEMPLATE.copy()
-    out = df.copy()
-    for col in template_cols:
-        if col not in out.columns:
-            out[col] = "" if col != "score" else 0
-    out = out[template_cols]
-    out["score"] = pd.to_numeric(out["score"], errors="coerce").fillna(0).clip(-2, 2)
-    out["status"] = out["status"].fillna("neutral").astype(str).str.lower().str.strip()
+def compute_rolling_correlations(prices: pd.DataFrame, peers: Iterable[str], window: int = 60) -> pd.DataFrame:
+    out = pd.DataFrame()
+    for peer in peers:
+        series = rolling_correlation(prices, "MOIL", peer, window=window)
+        if not series.empty:
+            out[peer] = series
     return out
 
 
-def _score_component(
-    components: List[Dict[str, object]],
-    category: str,
-    signal: str,
-    points: float,
-    max_abs_points: float,
-    rationale: str,
-) -> None:
-    components.append(
-        {
-            "category": category,
-            "signal": signal,
-            "points": float(points),
-            "max_abs_points": float(max_abs_points),
-            "rationale": rationale,
-        }
+def detect_anomalies(
+    prices: pd.DataFrame,
+    volumes: Optional[pd.DataFrame] = None,
+    window: int = 60,
+    threshold: float = 2.5,
+) -> pd.DataFrame:
+    if prices.empty:
+        return pd.DataFrame()
+    returns = compute_returns(prices)
+    rows: List[Dict[str, object]] = []
+    for asset in returns.columns:
+        r = returns[asset].dropna()
+        if len(r) < max(20, window // 2):
+            continue
+        mu = r.rolling(window, min_periods=max(10, window // 2)).mean().iloc[-1]
+        sd = r.rolling(window, min_periods=max(10, window // 2)).std().iloc[-1]
+        latest = r.iloc[-1]
+        z = np.nan if sd == 0 or pd.isna(sd) else (latest - mu) / sd
+        volume_z = np.nan
+        if volumes is not None and asset in volumes.columns:
+            v = volumes[asset].replace(0, np.nan).dropna()
+            if len(v) >= max(20, window // 2):
+                v_mu = v.rolling(window, min_periods=max(10, window // 2)).mean().iloc[-1]
+                v_sd = v.rolling(window, min_periods=max(10, window // 2)).std().iloc[-1]
+                volume_z = np.nan if v_sd == 0 or pd.isna(v_sd) else (v.iloc[-1] - v_mu) / v_sd
+        flag = abs(z) >= threshold if not pd.isna(z) else False
+        vol_flag = volume_z >= threshold if not pd.isna(volume_z) else False
+        rows.append(
+            {
+                "asset": asset,
+                "latest_return_%": latest,
+                "z_score": z,
+                "volume_z_score": volume_z,
+                "direction": "up" if latest > 0 else "down",
+                "flag": "ANOMALY" if flag or vol_flag else "normal",
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["flag", "z_score"], ascending=[False, False])
+
+
+def normalize_manual_macro(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    out = df.copy()
+    for col in columns:
+        if col not in out.columns:
+            out[col] = "" if col != "score" else 0.0
+    out = out[columns]
+    out["date"] = out["date"].astype(str).str.strip()
+    out["indicator"] = out["indicator"].astype(str).str.strip()
+    out["status"] = out["status"].astype(str).str.strip().replace("", "neutral")
+    out["score"] = pd.to_numeric(out["score"], errors="coerce").fillna(0.0).clip(-2, 2)
+    return out
+
+
+def read_manual_macro_csv(path: Path) -> pd.DataFrame:
+    if path.exists():
+        try:
+            return normalize_manual_macro(pd.read_csv(path))
+        except Exception:
+            pass
+    return normalize_manual_macro(
+        pd.DataFrame(
+            [
+                {
+                    "date": "",
+                    "indicator": "Silico-Manganese Prices",
+                    "value": "",
+                    "unit": "INR/t",
+                    "status": "neutral",
+                    "score": 0.0,
+                    "commentary": "Enter latest SiMn price direction.",
+                    "source": "Manual",
+                },
+                {
+                    "date": "",
+                    "indicator": "India Crude Steel Production",
+                    "value": "",
+                    "unit": "Mt / YoY %",
+                    "status": "neutral",
+                    "score": 0.0,
+                    "commentary": "Positive when output and consumption are rising.",
+                    "source": "Manual",
+                },
+                {
+                    "date": "",
+                    "indicator": "China Steel Exports",
+                    "value": "",
+                    "unit": "Mt / YoY %",
+                    "status": "neutral",
+                    "score": 0.0,
+                    "commentary": "Positive when export pressure is easing.",
+                    "source": "Manual",
+                },
+                {
+                    "date": "",
+                    "indicator": "China Power / Industrial Stress",
+                    "value": "",
+                    "unit": "qualitative",
+                    "status": "neutral",
+                    "score": 0.0,
+                    "commentary": "Watch Chinese power stress and industrial curtailment.",
+                    "source": "Manual",
+                },
+            ]
+        )
     )
 
 
-def _series_score_above_ma(
-    prices: pd.DataFrame,
-    asset: str,
-    ma_window: int,
-    points: float,
-    positive_when_above: bool = True,
-) -> Tuple[float, str]:
-    if asset not in prices:
-        return 0.0, f"{asset} data unavailable."
-    series = prices[asset].dropna()
-    min_periods = max(20, ma_window // 2)
-    if len(series) < min_periods:
-        return 0.0, f"{asset} has insufficient history for {ma_window}DMA."
-    latest = float(series.iloc[-1])
-    ma = float(series.rolling(ma_window, min_periods=min_periods).mean().iloc[-1])
-    if not np.isfinite(ma) or ma == 0:
-        return 0.0, f"{asset} moving average unavailable."
-    above = latest > ma
-    bullish = above if positive_when_above else not above
-    distance = latest / ma - 1
-    direction = "above" if above else "below"
-    signed_points = points if bullish else -points
-    return signed_points, f"{asset} is {direction} its {ma_window}DMA by {distance:.1%}."
+def read_news_tracker_csv(path: Path) -> pd.DataFrame:
+    columns = ["date", "category", "item", "value", "impact", "confidence", "details", "source"]
+    if path.exists():
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            df = pd.DataFrame(columns=columns)
+    else:
+        df = pd.DataFrame(columns=columns)
+    for col in columns:
+        if col not in df.columns:
+            df[col] = "" if col not in {"impact", "confidence"} else 0.0
+    df = df[columns]
+    df["impact"] = pd.to_numeric(df["impact"], errors="coerce").fillna(0.0).clip(-2, 2)
+    df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.5).clip(0, 1)
+    return df
 
 
-def _series_return_score(
-    prices: pd.DataFrame,
-    asset: str,
-    lookback: int,
-    points: float,
-    positive_when_up: bool = True,
-) -> Tuple[float, str]:
-    if asset not in prices:
-        return 0.0, f"{asset} data unavailable."
-    ret = _pct_change(prices[asset], lookback)
+def _component_score_from_return(ret: Optional[float], strong: float = 0.08, mild: float = 0.03) -> Tuple[float, str, float]:
     if ret is None:
-        return 0.0, f"{asset} has insufficient history for {lookback}D return."
-    bullish = ret > 0 if positive_when_up else ret < 0
-    signed_points = points if bullish else -points
-    return signed_points, f"{asset} {lookback}D return is {ret:.1%}."
+        return 0.0, "Insufficient history", 0.25
+    if ret >= strong:
+        return 1.0, f"strong positive return {ret:.1%}", 0.90
+    if ret >= mild:
+        return 0.5, f"positive return {ret:.1%}", 0.75
+    if ret <= -strong:
+        return -1.0, f"strong negative return {ret:.1%}", 0.90
+    if ret <= -mild:
+        return -0.5, f"negative return {ret:.1%}", 0.75
+    return 0.0, f"flat/mixed return {ret:.1%}", 0.60
 
 
-def classify_regime(normalized_score: float) -> Tuple[str, str]:
-    if normalized_score >= 70:
-        return "Bullish industrial expansion", "Risk-on"
-    if normalized_score >= 55:
-        return "Constructive / accumulating", "Balanced risk"
-    if normalized_score >= 45:
-        return "Neutral / watch", "Two-way risk"
-    if normalized_score >= 30:
-        return "Defensive industrial regime", "Risk-off"
-    return "Stress / de-rating risk", "High risk-off"
+def _component_score_from_distance(dist: Optional[float], strong: float = 0.08, mild: float = 0.0) -> Tuple[float, str, float]:
+    if dist is None:
+        return 0.0, "Insufficient moving-average history", 0.25
+    if dist >= strong:
+        return 1.0, f"well above trend by {dist:.1%}", 0.90
+    if dist > mild:
+        return 0.5, f"above trend by {dist:.1%}", 0.80
+    if dist <= -strong:
+        return -1.0, f"well below trend by {dist:.1%}", 0.90
+    if dist < mild:
+        return -0.5, f"below trend by {dist:.1%}", 0.80
+    return 0.0, f"near trend by {dist:.1%}", 0.60
+
+
+def _manual_source_scores(manual_macro: pd.DataFrame, groq_scores: Optional[dict]) -> pd.DataFrame:
+    manual = normalize_manual_macro(manual_macro)
+    if not groq_scores or not isinstance(groq_scores, dict) or not groq_scores.get("macro_scores"):
+        manual["applied_score"] = manual["score"]
+        manual["applied_confidence"] = 0.65
+        manual["applied_source"] = manual.get("source", "Manual")
+        manual["applied_rationale"] = manual.get("commentary", "")
+        return manual
+
+    ai_rows = pd.DataFrame(groq_scores.get("macro_scores", []))
+    if ai_rows.empty or "indicator" not in ai_rows.columns:
+        manual["applied_score"] = manual["score"]
+        manual["applied_confidence"] = 0.65
+        manual["applied_source"] = manual.get("source", "Manual")
+        manual["applied_rationale"] = manual.get("commentary", "")
+        return manual
+
+    ai_rows["indicator_key"] = ai_rows["indicator"].astype(str).str.strip().str.lower()
+    ai_map = ai_rows.set_index("indicator_key").to_dict("index")
+    applied_scores = []
+    applied_conf = []
+    applied_source = []
+    applied_rationale = []
+    for _, row in manual.iterrows():
+        key = str(row["indicator"]).strip().lower()
+        ai = ai_map.get(key)
+        if ai:
+            applied_scores.append(float(np.clip(pd.to_numeric(ai.get("score", 0), errors="coerce"), -2, 2)))
+            applied_conf.append(float(np.clip(pd.to_numeric(ai.get("confidence", 0.65), errors="coerce"), 0, 1)))
+            applied_source.append("Groq/Llama 3.3")
+            applied_rationale.append(str(ai.get("rationale", row.get("commentary", ""))))
+        else:
+            applied_scores.append(float(row["score"]))
+            applied_conf.append(0.65)
+            applied_source.append(str(row.get("source", "Manual")))
+            applied_rationale.append(str(row.get("commentary", "")))
+    manual["applied_score"] = applied_scores
+    manual["applied_confidence"] = applied_conf
+    manual["applied_source"] = applied_source
+    manual["applied_rationale"] = applied_rationale
+    return manual
+
+
+def compute_data_quality(
+    data: Mapping[str, pd.DataFrame],
+    manual_macro: pd.DataFrame,
+    tickers: Optional[Mapping[str, str]] = None,
+) -> Tuple[float, pd.DataFrame]:
+    rows: List[Dict[str, object]] = []
+    expected = list((tickers or DEFAULT_MARKET_TICKERS).keys())
+    today = pd.Timestamp.today().normalize()
+    for asset in expected:
+        df = data.get(asset, pd.DataFrame())
+        if df is None or df.empty or "Close" not in df.columns or df["Close"].dropna().empty:
+            rows.append({"source": asset, "type": "market", "score": 0.0, "status": "missing", "details": "No close price"})
+            continue
+        last_date = pd.to_datetime(df.index.max()).normalize()
+        age_days = int(max((today - last_date).days, 0))
+        row_count = len(df)
+        freshness = 1.0 if age_days <= 4 else 0.75 if age_days <= 10 else 0.35
+        coverage = 1.0 if row_count >= 180 else 0.75 if row_count >= 60 else 0.40
+        score = 100 * min(freshness, coverage)
+        rows.append(
+            {
+                "source": asset,
+                "type": "market",
+                "score": score,
+                "status": "ok" if score >= 70 else "watch",
+                "details": f"rows={row_count}; last={last_date.date()}; age={age_days}d",
+            }
+        )
+
+    manual = normalize_manual_macro(manual_macro)
+    for _, row in manual.iterrows():
+        score = 70.0
+        details = []
+        date_text = str(row.get("date", "")).strip()
+        if date_text:
+            parsed = pd.to_datetime(date_text, errors="coerce")
+            if pd.notna(parsed):
+                age_days = int(max((today - parsed.normalize()).days, 0))
+                if age_days <= 7:
+                    score = 90.0
+                elif age_days <= 30:
+                    score = 70.0
+                else:
+                    score = 45.0
+                details.append(f"age={age_days}d")
+            else:
+                score = 55.0
+                details.append("date parse warning")
+        else:
+            score = 50.0
+            details.append("missing date")
+        if not str(row.get("value", "")).strip():
+            score = min(score, 45.0)
+            details.append("missing value")
+        rows.append(
+            {
+                "source": str(row.get("indicator", "Manual indicator")),
+                "type": "manual macro",
+                "score": score,
+                "status": "ok" if score >= 70 else "watch",
+                "details": "; ".join(details),
+            }
+        )
+    quality_df = pd.DataFrame(rows)
+    if quality_df.empty:
+        return 0.0, quality_df
+    return float(quality_df["score"].mean()), quality_df
 
 
 def compute_regime_score(
     prices: pd.DataFrame,
-    manual_macro: Optional[pd.DataFrame] = None,
-    gemini_scores: Optional[Dict[str, Any]] = None,
+    manual_macro: pd.DataFrame,
+    groq_scores: Optional[dict] = None,
+    volumes: Optional[pd.DataFrame] = None,
+    data_quality_score: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, RegimeSummary]:
-    """Compute a transparent composite regime score.
+    rows: List[Dict[str, object]] = []
 
-    The score intentionally mixes market-implied signals and manually maintained
-    physical/industrial indicators. Each row can be audited and overwritten in future.
-    """
-    components: List[Dict[str, object]] = []
-
-    score, rationale = _series_score_above_ma(prices, "MOIL", 50, 1.0, True)
-    _score_component(components, "MOIL trend", "MOIL vs 50DMA", score, 1.0, rationale)
-
-    score, rationale = _series_score_above_ma(prices, "MOIL", 200, 1.5, True)
-    _score_component(components, "MOIL trend", "MOIL vs 200DMA", score, 1.5, rationale)
-
-    score, rationale = _series_return_score(prices, "MOIL", 63, 1.0, True)
-    _score_component(components, "MOIL momentum", "MOIL 3M momentum", score, 1.0, rationale)
-
-    score, rationale = _series_score_above_ma(prices, "NIFTY Metal", 50, 1.0, True)
-    _score_component(components, "India metals cycle", "NIFTY Metal vs 50DMA", score, 1.0, rationale)
-
-    peer_returns: List[float] = []
-    for peer in STEEL_PEERS:
-        if peer in prices:
-            ret = _pct_change(prices[peer], 63)
-            if ret is not None:
-                peer_returns.append(ret)
-    if peer_returns:
-        median_peer_ret = float(np.median(peer_returns))
-        peer_points = 1.0 if median_peer_ret > 0 else -1.0
-        rationale = f"Median 3M steel peer return is {median_peer_ret:.1%}."
-    else:
-        peer_points = 0.0
-        rationale = "Steel peer return data unavailable."
-    _score_component(components, "Steel demand proxy", "JSW/SAIL/Tata median momentum", peer_points, 1.0, rationale)
-
-    score, rationale = _series_score_above_ma(prices, "Brent Crude", 50, 0.75, False)
-    _score_component(components, "Energy stress", "Brent below/above 50DMA", score, 0.75, rationale)
-
-    score, rationale = _series_return_score(prices, "USDINR", 20, 0.75, False)
-    _score_component(components, "FX stress", "USDINR 1M direction", score, 0.75, rationale)
-
-    score, rationale = _series_score_above_ma(prices, "Baltic Dry Proxy", 50, 0.75, True)
-    _score_component(components, "Freight / bulk cycle", "Baltic Dry proxy vs 50DMA", score, 0.75, rationale)
-
-    # Manual macro indicators
-    if manual_macro is not None and not manual_macro.empty:
-        # Use Gemini scores if available, otherwise manual scores
-        if gemini_scores and "macro_scores" in gemini_scores:
-            for gemini_score in gemini_scores["macro_scores"]:
-                indicator = gemini_score.get("indicator", "")
-                score = gemini_score.get("score", 0)
-                rationale = gemini_score.get("rationale", "Gemini AI assessment")
-                _score_component(
-                    components,
-                    "Manual Macro (Gemini)",
-                    f"{indicator} (AI)",
-                    score,
-                    2.0,
-                    rationale,
-                )
-        else:
-            manual = normalize_manual_macro(manual_macro)
-            for _, row in manual.iterrows():
-                indicator = str(row.get("indicator", "Manual indicator")).strip() or "Manual indicator"
-                points = float(row.get("score", 0))
-                status = str(row.get("status", "neutral")).strip() or "neutral"
-                note = str(row.get("commentary", "")).strip()
-                _score_component(
-                    components,
-                    "Manual physical macro",
-                    f"{indicator} ({status})",
-                    points,
-                    2.0,
-                    note,
-                )
-
-    scorecard = pd.DataFrame(components)
-    if scorecard.empty:
-        summary = RegimeSummary(
-            score=0,
-            max_score=0,
-            min_score=0,
-            normalized_score=50,
-            label="Neutral / watch",
-            risk_level="Two-way risk",
-            updated_at=datetime.now().isoformat(timespec="seconds"),
+    def add(pillar: str, signal: str, normalized_signal: float, weight: float, rationale: str, source: str, confidence: float = 0.70) -> None:
+        normalized_signal = float(np.clip(normalized_signal, -1, 1))
+        points = normalized_signal * weight
+        rows.append(
+            {
+                "pillar": pillar,
+                "signal": signal,
+                "signal_score": round(normalized_signal, 3),
+                "weight": weight,
+                "points": round(points, 3),
+                "max_points": weight,
+                "rationale": rationale,
+                "source": source,
+                "confidence": round(float(np.clip(confidence, 0, 1)), 2),
+            }
         )
+
+    # Equity/market-cycle layer
+    if "MOIL" in prices.columns:
+        moil = prices["MOIL"]
+        score, why, conf = _component_score_from_return(_pct_change(moil, 20), strong=0.10, mild=0.03)
+        add("Market", "MOIL 20D momentum", score, 8, why, "yfinance", conf)
+        score, why, conf = _component_score_from_distance(_distance_to_ma(moil, 50, 30), strong=0.08, mild=0.0)
+        add("Market", "MOIL vs 50DMA", score, 8, why, "yfinance", conf)
+        score, why, conf = _component_score_from_distance(_distance_to_ma(moil, 200, 100), strong=0.12, mild=0.0)
+        add("Market", "MOIL vs 200DMA", score, 8, why, "yfinance", conf)
+    else:
+        add("Market", "MOIL data availability", -0.5, 8, "MOIL price feed missing", "data quality", 0.90)
+
+    if "NIFTY Metal" in prices.columns:
+        score, why, conf = _component_score_from_return(_pct_change(prices["NIFTY Metal"], 20), strong=0.08, mild=0.025)
+        add("Market", "NIFTY Metal breadth", score, 7, why, "yfinance", conf)
+
+    steel_scores = []
+    steel_why = []
+    for peer in STEEL_PEERS:
+        if peer in prices.columns:
+            score, why, _ = _component_score_from_distance(_distance_to_ma(prices[peer], 50, 30), strong=0.08, mild=0.0)
+            steel_scores.append(score)
+            steel_why.append(f"{peer}: {why}")
+    if steel_scores:
+        add("Market", "Indian steel basket trend", float(np.mean(steel_scores)), 8, "; ".join(steel_why), "yfinance", 0.78)
+
+    if "Hindustan Zinc" in prices.columns:
+        score, why, conf = _component_score_from_return(_pct_change(prices["Hindustan Zinc"], 20), strong=0.08, mild=0.025)
+        add("Market", "Metal peer confirmation", score, 4, why, "yfinance", conf)
+
+    # Volume confirmation
+    if volumes is not None and "MOIL" in volumes.columns and "MOIL" in prices.columns:
+        v = volumes["MOIL"].replace(0, np.nan).dropna()
+        ret20 = _pct_change(prices["MOIL"], 20)
+        if len(v) >= 20 and ret20 is not None:
+            avg20 = v.rolling(20, min_periods=10).mean().iloc[-1]
+            rel_vol = float(v.iloc[-1] / avg20) if avg20 and not pd.isna(avg20) else np.nan
+            z = np.nan
+            if len(v) >= 60:
+                mu = v.rolling(60, min_periods=20).mean().iloc[-1]
+                sd = v.rolling(60, min_periods=20).std().iloc[-1]
+                z = (v.iloc[-1] - mu) / sd if sd and not pd.isna(sd) else np.nan
+            vol_signal = 0.0
+            why = f"relative volume {rel_vol:.2f}x; 20D return {ret20:.1%}"
+            if ret20 > 0.03 and rel_vol >= 1.20:
+                vol_signal = 0.75
+            elif ret20 < -0.03 and rel_vol >= 1.20:
+                vol_signal = -0.75
+            elif ret20 > 0.03 and rel_vol < 0.80:
+                vol_signal = -0.25
+                why += "; rally lacks volume confirmation"
+            add("Volume", "MOIL volume confirmation", vol_signal, 7, why, "yfinance volume", 0.70)
+
+    # Macro stress layer
+    if "Brent Crude" in prices.columns:
+        ret = _pct_change(prices["Brent Crude"], 20)
+        if ret is None:
+            add("Macro stress", "Brent energy stress", 0.0, 6, "Insufficient Brent history", "yfinance", 0.25)
+        else:
+            # Rising Brent is an input-cost and inflation stress for industrials.
+            signal = -1.0 if ret > 0.10 else -0.5 if ret > 0.04 else 0.5 if ret < -0.04 else 0.0
+            add("Macro stress", "Brent energy stress", signal, 6, f"Brent 20D move {ret:.1%}", "yfinance", 0.75)
+
+    if "USDINR" in prices.columns:
+        ret = _pct_change(prices["USDINR"], 20)
+        if ret is None:
+            add("Macro stress", "USDINR FX stress", 0.0, 5, "Insufficient USDINR history", "yfinance", 0.25)
+        else:
+            signal = -1.0 if ret > 0.025 else -0.5 if ret > 0.010 else 0.5 if ret < -0.010 else 0.0
+            add("Macro stress", "USDINR FX stress", signal, 5, f"USDINR 20D move {ret:.1%}", "yfinance", 0.70)
+
+    if "Baltic Dry Proxy" in prices.columns:
+        score, why, conf = _component_score_from_return(_pct_change(prices["Baltic Dry Proxy"], 20), strong=0.10, mild=0.03)
+        add("Freight", "Dry-bulk freight proxy", score, 4, why, "yfinance", conf)
+
+    # Manual / AI physical macro layer
+    applied_macro = _manual_source_scores(manual_macro, groq_scores)
+    for _, row in applied_macro.iterrows():
+        indicator = str(row.get("indicator", "Manual macro"))
+        applied = float(row.get("applied_score", row.get("score", 0)))
+        confidence = float(row.get("applied_confidence", 0.65))
+        rationale = str(row.get("applied_rationale", row.get("commentary", "")))
+        source = str(row.get("applied_source", row.get("source", "Manual")))
+        weight = 7.0
+        if "Silico" in indicator or "Manganese" in indicator:
+            weight = 10.0
+        elif "Crude Steel" in indicator or "Steel Production" in indicator:
+            weight = 8.0
+        elif "China Steel Exports" in indicator:
+            weight = 8.0
+        elif "Power" in indicator or "Industrial Stress" in indicator:
+            weight = 5.0
+        add("Physical macro", indicator, applied / 2.0, weight, rationale, source, confidence)
+
+    scorecard = pd.DataFrame(rows)
+    if scorecard.empty:
+        summary = RegimeSummary(0, 1, -1, 50, "Neutral / mixed cycle", "Unknown", "Watch", 0, 0, _now_utc())
         return scorecard, summary
 
-    total_score = float(scorecard["points"].sum())
-    max_score = float(scorecard["max_abs_points"].sum())
+    raw_score = float(scorecard["points"].sum())
+    max_score = float(scorecard["max_points"].sum())
     min_score = -max_score
-    normalized = 50.0 if max_score == 0 else (total_score - min_score) / (max_score - min_score) * 100
+    normalized = (raw_score - min_score) / (max_score - min_score) * 100 if max_score else 50.0
     normalized = float(np.clip(normalized, 0, 100))
-    label, risk_level = classify_regime(normalized)
+
+    if normalized >= 70:
+        label = "Bullish industrial reflation"
+        risk_level = "Low-to-moderate"
+    elif normalized >= 55:
+        label = "Constructive / watch confirmation"
+        risk_level = "Moderate"
+    elif normalized >= 45:
+        label = "Neutral / mixed cycle"
+        risk_level = "Balanced"
+    else:
+        label = "Risk-off commodity regime"
+        risk_level = "Elevated"
+
+    data_q = 70.0 if data_quality_score is None else float(np.clip(data_quality_score, 0, 100))
+    avg_conf = float((scorecard["confidence"] * scorecard["max_points"]).sum() / scorecard["max_points"].sum() * 100)
+    signal_strength = min(abs(normalized - 50) * 2, 100)
+    confidence_score = float(np.clip(0.50 * avg_conf + 0.30 * data_q + 0.20 * signal_strength, 0, 100))
+
+    alert_level = "Watch"
+    if normalized >= 70 and confidence_score >= 65:
+        alert_level = "Regime Shift"
+    elif normalized >= 55 and confidence_score >= 60:
+        alert_level = "Confirmation"
+    elif normalized <= 44 and confidence_score >= 60:
+        alert_level = "Risk Warning"
+
     summary = RegimeSummary(
-        score=round(total_score, 2),
-        max_score=round(max_score, 2),
-        min_score=round(min_score, 2),
+        raw_score=round(raw_score, 3),
+        max_score=round(max_score, 3),
+        min_score=round(min_score, 3),
         normalized_score=round(normalized, 1),
         label=label,
         risk_level=risk_level,
-        updated_at=datetime.now().isoformat(timespec="seconds"),
+        alert_level=alert_level,
+        confidence_score=round(confidence_score, 1),
+        data_quality_score=round(data_q, 1),
+        updated_at=_now_utc(),
     )
-    return scorecard, summary
+    return scorecard.sort_values("points", ascending=False), summary
 
 
 def generate_rule_based_commentary(
     summary: RegimeSummary,
     scorecard: pd.DataFrame,
-    moil_corr: pd.DataFrame,
-    anomalies: pd.DataFrame,
+    moil_corr: Optional[pd.DataFrame] = None,
+    anomalies: Optional[pd.DataFrame] = None,
 ) -> str:
-    """Generate concise macro commentary without an external LLM dependency."""
-    if scorecard.empty:
-        return "Macro regime is neutral because there is not enough market or manual macro data to score the dashboard."
-
+    if scorecard is None or scorecard.empty:
+        return "No scorecard available. Load market data and manual macro inputs."
     positives = scorecard[scorecard["points"] > 0].sort_values("points", ascending=False).head(3)
     negatives = scorecard[scorecard["points"] < 0].sort_values("points").head(3)
-    neutral = scorecard[scorecard["points"] == 0].head(3)
-
-    lines = [
-        f"**Regime read-through:** {summary.label} ({summary.normalized_score:.1f}/100).",
-        f"The composite score is {summary.score:+.2f} on a possible range of {summary.min_score:+.2f} to {summary.max_score:+.2f}, implying {summary.risk_level.lower()} conditions for MOIL-linked industrial exposure.",
-    ]
-
-    if not positives.empty:
-        pos_text = "; ".join(
-            f"{row['signal']}: {row['rationale']}" for _, row in positives.iterrows()
-        )
-        lines.append(f"**Supportive signals:** {pos_text}")
-
-    if not negatives.empty:
-        neg_text = "; ".join(
-            f"{row['signal']}: {row['rationale']}" for _, row in negatives.iterrows()
-        )
-        lines.append(f"**Pressure points:** {neg_text}")
-
-    if not moil_corr.empty:
-        top_corr = moil_corr.head(3)
-        corr_text = ", ".join(
-            f"{row['asset']} ({row['correlation_to_moil']:+.2f})" for _, row in top_corr.iterrows()
-        )
-        lines.append(f"**Correlation map:** MOIL is currently most aligned with {corr_text} over the selected lookback.")
-
-    flagged = anomalies[anomalies["flag"] == "ANOMALY"] if not anomalies.empty else pd.DataFrame()
-    if not flagged.empty:
-        anomaly_text = ", ".join(
-            f"{row['asset']} {row['direction']} z={row['z_score']:+.1f}" for _, row in flagged.head(4).iterrows()
-        )
-        lines.append(f"**Anomaly watch:** {anomaly_text}.")
-    elif not neutral.empty:
-        missing_text = "; ".join(f"{row['signal']}: {row['rationale']}" for _, row in neutral.iterrows())
-        lines.append(f"**Data gaps / watchlist:** {missing_text}")
-
-    lines.append(
-        "**Desk action:** update the manual silico-manganese, India steel output, China export and China power-stress rows before using this as a physical-market signal."
+    pos_text = "; ".join(f"{r.signal} ({r.rationale})" for r in positives.itertuples(index=False)) or "no strong positive signal"
+    neg_text = "; ".join(f"{r.signal} ({r.rationale})" for r in negatives.itertuples(index=False)) or "no major pressure signal"
+    corr_text = ""
+    if moil_corr is not None and not moil_corr.empty:
+        top = moil_corr.head(3)
+        corr_text = " Leading correlation map: " + "; ".join(
+            f"{row.asset} {float(row.correlation_to_moil):+.2f}" for row in top.itertuples(index=False)
+        ) + "."
+    anomaly_text = ""
+    if anomalies is not None and not anomalies.empty and "flag" in anomalies.columns:
+        flagged = anomalies[anomalies["flag"] == "ANOMALY"].head(3)
+        if not flagged.empty:
+            anomaly_text = " Active anomaly watch: " + "; ".join(
+                f"{row.asset} {row.direction} z={float(row.z_score):+.2f}" for row in flagged.itertuples(index=False)
+            ) + "."
+    return (
+        f"**Regime:** {summary.label} ({summary.normalized_score:.1f}/100). "
+        f"Confidence {summary.confidence_score:.1f}/100; data quality {summary.data_quality_score:.1f}/100.\n\n"
+        f"**Supportive drivers:** {pos_text}.\n\n"
+        f"**Pressure drivers:** {neg_text}.\n\n"
+        f"**Desk read:** MOIL Macro Radar is in **{summary.alert_level}** mode. "
+        f"Use this as a regime lens, not as an automatic trade instruction.{corr_text}{anomaly_text}"
     )
-    return "\n\n".join(lines)
 
 
-def generate_gemini_commentary_wrapper(
+def compute_technical_levels(data: Mapping[str, pd.DataFrame], asset: str = "MOIL") -> Dict[str, object]:
+    df = data.get(asset, pd.DataFrame())
+    if df is None or df.empty or "Close" not in df.columns:
+        return {}
+    close = df["Close"].dropna()
+    if close.empty:
+        return {}
+    levels: Dict[str, object] = {"asset": asset, "last_close": float(close.iloc[-1]), "last_date": close.index[-1].strftime("%Y-%m-%d")}
+    if len(close) >= 20:
+        levels["support_20d"] = float(close.tail(20).min())
+        levels["resistance_20d"] = float(close.tail(20).max())
+    if len(close) >= 50:
+        levels["dma50"] = float(close.rolling(50).mean().iloc[-1])
+    if len(close) >= 200:
+        levels["dma200"] = float(close.rolling(200).mean().iloc[-1])
+    if "Volume" in df.columns:
+        v = df["Volume"].replace(0, np.nan).dropna()
+        if len(v) >= 20:
+            levels["relative_volume"] = float(v.iloc[-1] / v.rolling(20).mean().iloc[-1])
+    return levels
+
+
+def build_telegram_alert_text(
     summary: RegimeSummary,
     scorecard: pd.DataFrame,
+    anomalies: Optional[pd.DataFrame],
+    prices: pd.DataFrame,
+    manual_macro: pd.DataFrame,
+    news_tracker: Optional[pd.DataFrame] = None,
+    technical_levels: Optional[Dict[str, object]] = None,
+    ai_commentary: Optional[str] = None,
+) -> str:
+    positives = scorecard[scorecard["points"] > 0].sort_values("points", ascending=False).head(2) if scorecard is not None and not scorecard.empty else pd.DataFrame()
+    negatives = scorecard[scorecard["points"] < 0].sort_values("points").head(2) if scorecard is not None and not scorecard.empty else pd.DataFrame()
+    lines = [
+        f"🚨 MOIL Macro Radar — {summary.alert_level}",
+        f"Regime: {summary.label} | {summary.normalized_score:.1f}/100",
+        f"Confidence: {summary.confidence_score:.1f}/100 | Data quality: {summary.data_quality_score:.1f}/100",
+    ]
+    if technical_levels:
+        close = technical_levels.get("last_close")
+        s20 = technical_levels.get("support_20d")
+        r20 = technical_levels.get("resistance_20d")
+        dma50 = technical_levels.get("dma50")
+        dma200 = technical_levels.get("dma200")
+        tech_parts = []
+        if close is not None:
+            tech_parts.append(f"Close {float(close):.2f}")
+        if s20 is not None and r20 is not None:
+            tech_parts.append(f"20D S/R {float(s20):.2f}/{float(r20):.2f}")
+        if dma50 is not None:
+            tech_parts.append(f"50DMA {float(dma50):.2f}")
+        if dma200 is not None:
+            tech_parts.append(f"200DMA {float(dma200):.2f}")
+        if tech_parts:
+            lines.append("Tech: " + " | ".join(tech_parts))
+    if not positives.empty:
+        lines.append("Positives: " + "; ".join(f"{r.signal} {r.points:+.1f}" for r in positives.itertuples(index=False)))
+    if not negatives.empty:
+        lines.append("Pressures: " + "; ".join(f"{r.signal} {r.points:+.1f}" for r in negatives.itertuples(index=False)))
+    manual = normalize_manual_macro(manual_macro)
+    if not manual.empty:
+        macro_line = "; ".join(f"{r.indicator}: {float(r.score):+.1f}" for r in manual.itertuples(index=False))
+        lines.append("Manual macro: " + macro_line)
+    if anomalies is not None and not anomalies.empty and "flag" in anomalies.columns:
+        flagged = anomalies[anomalies["flag"] == "ANOMALY"].head(2)
+        if not flagged.empty:
+            lines.append("Anomalies: " + "; ".join(f"{r.asset} {r.direction} z={float(r.z_score):+.2f}" for r in flagged.itertuples(index=False)))
+    if ai_commentary:
+        lines.append("AI desk: " + ai_commentary.strip()[:800])
+    lines.append(f"Updated: {summary.updated_at}")
+    lines.append("No buy/sell advice. Regime intelligence only.")
+    return "\n".join(lines)
+
+
+def build_groq_prompt_for_copy(
+    summary: RegimeSummary,
+    scorecard: pd.DataFrame,
+    manual_macro: pd.DataFrame,
+    snapshot: pd.DataFrame,
     moil_corr: pd.DataFrame,
     anomalies: pd.DataFrame,
+    max_words: int = 150,
 ) -> str:
-    """Generate Gemini commentary for the dashboard."""
-    context = {
-        "regime_label": summary.label,
-        "regime_score": summary.normalized_score,
-        "manual_macro_score": 0,  # Could be calculated from scorecard
-        "top_correlations": moil_corr.head(3).to_dict('records') if not moil_corr.empty else [],
-        "anomalies": anomalies.head(5).to_dict('records') if not anomalies.empty else [],
+    payload = {
+        "regime": summary.__dict__,
+        "manual_macro": normalize_manual_macro(manual_macro).to_dict(orient="records"),
+        "market_snapshot": snapshot.to_dict(orient="records") if snapshot is not None and not snapshot.empty else [],
+        "top_scorecard": scorecard.head(10).to_dict(orient="records") if scorecard is not None and not scorecard.empty else [],
+        "moil_correlation": moil_corr.head(6).to_dict(orient="records") if moil_corr is not None and not moil_corr.empty else [],
+        "anomalies": anomalies.head(6).to_dict(orient="records") if anomalies is not None and not anomalies.empty else [],
     }
-    return generate_gemini_commentary(context) or generate_rule_based_commentary(summary, scorecard, moil_corr, anomalies)
+    return (
+        "You are an institutional commodity analyst writing a concise Telegram alert for MOIL Macro Radar.\n"
+        "Use only the JSON context below. Do not give buy/sell advice. Do not hallucinate missing values.\n"
+        f"Keep the answer under {max_words} words. Focus on regime, positives, pressures and watch items.\n\n"
+        f"Context:\n{payload}"
+    )
 
 
-# Legacy alias for backward compatibility
-generate_openai_commentary = generate_gemini_commentary_wrapper
+def run_market_validation(prices: pd.DataFrame, forward_days: Iterable[int] = (5, 10, 20)) -> pd.DataFrame:
+    """Lightweight validation: tests a transparent market-only setup condition.
 
-
-def format_alert_message(
-    summary: RegimeSummary,
-    scorecard: pd.DataFrame,
-    anomalies: pd.DataFrame,
-) -> str:
-    top_positive = scorecard[scorecard["points"] > 0].sort_values("points", ascending=False).head(2)
-    top_negative = scorecard[scorecard["points"] < 0].sort_values("points").head(2)
-    flagged = anomalies[anomalies["flag"] == "ANOMALY"].head(3) if not anomalies.empty else pd.DataFrame()
-
-    parts = [
-        "MOIL Macro Radar",
-        f"Regime: {summary.label}",
-        f"Score: {summary.normalized_score:.1f}/100 ({summary.score:+.2f})",
-        f"Risk tone: {summary.risk_level}",
-    ]
-    if not top_positive.empty:
-        parts.append("Support: " + "; ".join(str(x) for x in top_positive["signal"].tolist()))
-    if not top_negative.empty:
-        parts.append("Pressure: " + "; ".join(str(x) for x in top_negative["signal"].tolist()))
-    if not flagged.empty:
-        parts.append(
-            "Anomalies: "
-            + "; ".join(f"{row['asset']} z={row['z_score']:+.1f}" for _, row in flagged.iterrows())
+    This is intentionally simple and not a trading system: it checks whether a
+    constructive technical/sector regime historically preceded better MOIL
+    forward returns in the loaded data sample.
+    """
+    if prices.empty or "MOIL" not in prices.columns:
+        return pd.DataFrame()
+    moil = prices["MOIL"].dropna()
+    if len(moil) < 80:
+        return pd.DataFrame()
+    common = pd.DataFrame({"MOIL": moil})
+    if "NIFTY Metal" in prices.columns:
+        common["NIFTY Metal"] = prices["NIFTY Metal"]
+    common = common.dropna()
+    signal = (common["MOIL"] > common["MOIL"].rolling(50, min_periods=30).mean()) & (common["MOIL"].pct_change(20) > 0)
+    if "NIFTY Metal" in common.columns:
+        signal = signal & (common["NIFTY Metal"].pct_change(20) > 0)
+    rows = []
+    for fwd in forward_days:
+        fwd_ret = common["MOIL"].shift(-fwd) / common["MOIL"] - 1
+        sample = pd.DataFrame({"signal": signal, "fwd_ret": fwd_ret}).dropna()
+        if sample.empty or sample["signal"].sum() < 5:
+            continue
+        on = sample[sample["signal"]]
+        off = sample[~sample["signal"]]
+        rows.append(
+            {
+                "forward_days": fwd,
+                "signal_observations": int(len(on)),
+                "non_signal_observations": int(len(off)),
+                "avg_return_when_signal": float(on["fwd_ret"].mean()),
+                "hit_rate_when_signal": float((on["fwd_ret"] > 0).mean()),
+                "avg_return_without_signal": float(off["fwd_ret"].mean()) if len(off) else np.nan,
+                "excess_avg_return": float(on["fwd_ret"].mean() - off["fwd_ret"].mean()) if len(off) else np.nan,
+            }
         )
-    parts.append(f"Updated: {summary.updated_at}")
-    return "\n".join(parts)
+    return pd.DataFrame(rows)
 
 
-# Alias for app.py compatibility
-build_telegram_alert_text = format_alert_message
+def fetch_nse_deals(symbol: str = "MOIL") -> pd.DataFrame:
+    """Placeholder-friendly NSE deals fetcher.
+
+    NSE endpoints often require headers/cookies and may block cloud hosts. The
+    app calls this safely; failures return an empty DataFrame rather than
+    breaking the dashboard.
+    """
+    try:
+        import requests
+
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/",
+        }
+        session = requests.Session()
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+        url = "https://www.nseindia.com/api/historical/bulk-deals"
+        response = session.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        df = pd.DataFrame(data)
+        if df.empty:
+            return df
+        candidates = [c for c in df.columns if str(c).lower() in {"symbol", "sym"}]
+        if candidates:
+            df = df[df[candidates[0]].astype(str).str.upper() == symbol.upper()]
+        return df
+    except Exception:
+        return pd.DataFrame()
