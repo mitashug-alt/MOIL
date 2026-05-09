@@ -1,8 +1,7 @@
-"""Telegram integration for MOIL Macro Radar.
+"""Telegram alert helper for MOIL Macro Radar.
 
-Use environment variables or Streamlit secrets instead of hardcoding credentials:
-- TELEGRAM_BOT_TOKEN
-- TELEGRAM_CHAT_ID
+Credentials are read from Streamlit secrets or environment variables:
+TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
 """
 
 from __future__ import annotations
@@ -13,60 +12,51 @@ from typing import Optional, Tuple
 import requests
 
 
-TELEGRAM_API_BASE = "https://api.telegram.org"
+def _secret(name: str) -> str:
+    try:
+        import streamlit as st
+
+        value = st.secrets.get(name, "")
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    except Exception:
+        pass
+    return str(os.getenv(name, "") or "").strip()
 
 
 def send_telegram_alert(
     message: str,
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
-    parse_mode: Optional[str] = None,
     timeout: int = 15,
 ) -> Tuple[bool, str]:
-    """Send a Telegram message through the Bot API.
+    token = (bot_token or _secret("TELEGRAM_BOT_TOKEN")).strip()
+    target = (chat_id or _secret("TELEGRAM_CHAT_ID")).strip()
+    clean_message = (message or "").strip()
 
-    Returns (success, detail). The function never raises for missing credentials or
-    Telegram API errors, which makes it safe to call from a dashboard button.
-    """
-    def get_secret(name: str, default: str = "") -> str:
-        value = ""
-        try:
-            import streamlit as st
-            value = st.secrets.get(name, "")
-        except Exception:
-            value = ""
-        if not value:
-            value = os.getenv(name, default)
-        return str(value or "").strip()
-
-    token = bot_token or get_secret("TELEGRAM_BOT_TOKEN")
-    chat = chat_id or get_secret("TELEGRAM_CHAT_ID")
-
-    if not token or not chat:
-        return False, "Telegram token/chat_id missing. Set secrets or environment variables."
-    if not message.strip():
-        return False, "Message is empty."
-
-    payload = {"chat_id": chat, "text": message[:3900]}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
+    if not clean_message:
+        return False, "Telegram message is empty."
+    if not token or not target:
+        return False, "Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID."
 
     try:
-        response = requests.post(
-            f"{TELEGRAM_API_BASE}/bot{token}/sendMessage",
-            json=payload,
-            timeout=timeout,
-        )
-        if response.ok:
-            return True, "Telegram alert sent."
-        return False, f"Telegram API error {response.status_code}: {response.text[:300]}"
-    except requests.RequestException as exc:
-        return False, f"Telegram request failed: {exc}"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": target,
+            "text": clean_message[:4096],
+            "disable_web_page_preview": True,
+        }
+        response = requests.post(url, json=payload, timeout=timeout)
+        response.raise_for_status()
+        body = response.json()
+        if not body.get("ok"):
+            return False, f"Telegram rejected message: {body}"
+        return True, "Telegram alert sent."
+    except Exception as exc:
+        return False, f"Telegram send failed: {exc}"
 
 
 if __name__ == "__main__":
-    ok, detail = send_telegram_alert(
-        "MOIL Macro Radar test alert. Configure this script with environment variables."
-    )
+    ok, detail = send_telegram_alert("MOIL Macro Radar test alert")
     print(detail)
     raise SystemExit(0 if ok else 1)
