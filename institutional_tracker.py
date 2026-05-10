@@ -13,6 +13,13 @@ from typing import Any
 import pandas as pd
 import requests
 
+from institutional_layer.evidence_store import (
+    build_institutional_evidence_rows,
+    build_institutional_source_readiness,
+    build_smart_money_scorecard,
+    institutional_quality_summary,
+)
+
 SYMBOL = "MOIL"
 COMPANY_NAME = "MOIL Ltd"
 TRENDLYNE_MOIL_DEALS_URL = "https://trendlyne.com/equity/bulk-block-deals/MOIL/872/moil-ltd/"
@@ -290,6 +297,31 @@ class SmartMoneyTracker:
             "sast_filings": [],
             "smart_money_signals": [asdict(x) for x in signals],
         }
+
+        # Institutional Quality v2: convert raw deals/shareholding into
+        # confidence-scored evidence rows and confidence-adjusted signals.
+        try:
+            evidence = build_institutional_evidence_rows(result, outstanding_shares=self.outstanding_shares)
+            readiness = build_institutional_source_readiness(result)
+            scorecard = build_smart_money_scorecard(result)
+            summary = institutional_quality_summary(result)
+            result["institutional_evidence_rows"] = evidence.to_dict(orient="records") if not evidence.empty else []
+            result["institutional_source_readiness"] = readiness.to_dict(orient="records") if not readiness.empty else []
+            result["smart_money_scorecard_v2"] = scorecard.to_dict(orient="records") if not scorecard.empty else []
+            result["institutional_quality_summary"] = summary
+        except Exception as exc:  # noqa: BLE001
+            result["institutional_quality_error"] = str(exc)
+            result["institutional_evidence_rows"] = []
+            result["institutional_source_readiness"] = []
+            result["smart_money_scorecard_v2"] = []
+            result["institutional_quality_summary"] = {
+                "evidence_rows": 0,
+                "scoring_rows": 0,
+                "average_confidence": 0.0,
+                "net_effective_impact": 0.0,
+                "institutional_tone": "Institutional quality transform failed",
+            }
+
         Path("data/cache").mkdir(parents=True, exist_ok=True)
         Path("data/cache/institutional_activity_latest.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         with Path("data/history/institutional_activity_runs.jsonl").open("a", encoding="utf-8") as f:

@@ -62,6 +62,10 @@ from backend_cache_loader import (
     macro_cache_to_evidence_rows,
     macro_cache_to_source_readiness,
     institutional_cache_summary,
+    institutional_cache_to_evidence_rows,
+    institutional_cache_to_scorecard,
+    institutional_cache_to_source_readiness,
+    institutional_quality_summary_v2,
 )
 from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from_file
 from data_layer.validators import validate_evidence_dataframe
@@ -506,6 +510,40 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Institutional & exchange sync")
     st.write("Track qualitative news, fund actions and exchange activity. NSE requests can be blocked by cloud environments, so failures are handled safely.")
+
+    inst_cache = load_latest_institutional_cache()
+    inst_quality = institutional_quality_summary_v2(inst_cache)
+    inst_evidence = institutional_cache_to_evidence_rows(inst_cache)
+    inst_scorecard = institutional_cache_to_scorecard(inst_cache)
+    inst_readiness = institutional_cache_to_source_readiness(inst_cache)
+
+    st.markdown("#### Institutional Quality v2")
+    iq1, iq2, iq3, iq4 = st.columns(4)
+    iq1.metric("Evidence rows", inst_quality.get("evidence_rows", 0))
+    iq2.metric("Scoring rows", inst_quality.get("scoring_rows", 0))
+    iq3.metric("Avg confidence", f"{float(inst_quality.get('average_confidence', 0)):.0f}/100")
+    iq4.metric("Net smart-money impact", f"{float(inst_quality.get('net_effective_impact', 0)):+.2f}")
+    st.caption(f"Institutional tone: {inst_quality.get('institutional_tone', 'n/a')}")
+
+    with st.expander("Institutional source readiness", expanded=False):
+        if inst_readiness is None or inst_readiness.empty:
+            st.info("No institutional source-readiness rows yet. Run python institutional_tracker.py or use manual CSV upload.")
+        else:
+            st.dataframe(inst_readiness, use_container_width=True, hide_index=True)
+
+    with st.expander("Confidence-adjusted smart-money scorecard", expanded=True):
+        if inst_scorecard is None or inst_scorecard.empty:
+            st.info("No confidence-adjusted smart-money signals yet. No material institution-level event has passed quality gates.")
+        else:
+            st.dataframe(inst_scorecard, use_container_width=True, hide_index=True)
+
+    with st.expander("Institutional evidence viewer", expanded=False):
+        if inst_evidence is None or inst_evidence.empty:
+            st.info("No institutional evidence rows found in data/cache/institutional_activity_latest.json.")
+        else:
+            show_cols = [c for c in ["evidence_type", "source_name", "event_date", "institution", "transaction_type", "quantity", "price", "pct_equity", "holder_category", "holding_pct", "delta_pct_points", "data_confidence", "confidence_weight", "effective_impact", "scoring_allowed", "confidence_notes"] if c in inst_evidence.columns]
+            st.dataframe(inst_evidence[show_cols], use_container_width=True, hide_index=True)
+
     n1, n2, n3 = st.columns(3)
     with n1:
         if st.button("NSE Sync: Bulk/Block Deals"):
@@ -591,6 +629,8 @@ with tabs[6]:
                     "technical_levels": technical_levels,
                     "news_tracker": st.session_state.news_tracker.to_dict(orient="records") if not st.session_state.news_tracker.empty else [],
                     "source_readiness": source_provider_status().to_dict(orient="records"),
+                    "institutional_quality": institutional_quality_summary_v2(load_latest_institutional_cache()),
+                    "institutional_smart_money_scorecard": institutional_cache_to_scorecard(load_latest_institutional_cache()).to_dict(orient="records"),
                 }
                 st.session_state.groq_commentary = generate_groq_commentary(context)
 
@@ -670,7 +710,8 @@ with tabs[8]:
         avg_conf = 0.0
     q2.metric("Scoring-ready indicators", scoring_count)
     q3.metric("Avg source confidence", f"{avg_conf:.0f}/100")
-    q4.metric("Smart money signals", inst_summary.get("smart_money_signals", 0))
+    inst_quality_v2 = institutional_quality_summary_v2(inst_cache)
+    q4.metric("Institutional confidence", f"{float(inst_quality_v2.get('average_confidence', 0)):.0f}/100")
 
     st.markdown("#### Source readiness v2")
     st.dataframe(readiness_v2, use_container_width=True, hide_index=True)
@@ -688,6 +729,25 @@ with tabs[8]:
                 for _, row in subset.head(10).iterrows():
                     st.markdown(f"**{row.get('source_name','source')} — confidence {row.get('data_confidence',0)}/100**")
                     st.code(str(row.get("raw_text", ""))[:1200])
+
+    st.markdown("#### Institutional Quality v2")
+    inst_evidence_v2 = institutional_cache_to_evidence_rows(inst_cache)
+    inst_readiness_v2 = institutional_cache_to_source_readiness(inst_cache)
+    inst_scorecard_v2 = institutional_cache_to_scorecard(inst_cache)
+    c_inst1, c_inst2, c_inst3 = st.columns(3)
+    c_inst1.metric("Institutional evidence rows", int(len(inst_evidence_v2)) if inst_evidence_v2 is not None else 0)
+    c_inst2.metric("Institutional scoring rows", int(inst_evidence_v2["scoring_allowed"].sum()) if inst_evidence_v2 is not None and not inst_evidence_v2.empty and "scoring_allowed" in inst_evidence_v2.columns else 0)
+    c_inst3.metric("Net institutional impact", f"{float(inst_quality_v2.get('net_effective_impact', 0)):+.2f}")
+    with st.expander("Institutional source readiness v2", expanded=False):
+        st.dataframe(inst_readiness_v2, use_container_width=True, hide_index=True)
+    with st.expander("Institutional evidence and scorecard", expanded=False):
+        if inst_scorecard_v2 is not None and not inst_scorecard_v2.empty:
+            st.markdown("**Confidence-adjusted smart-money scorecard**")
+            st.dataframe(inst_scorecard_v2, use_container_width=True, hide_index=True)
+        if inst_evidence_v2 is not None and not inst_evidence_v2.empty:
+            st.markdown("**Institutional evidence rows**")
+            show_cols = [c for c in ["evidence_type", "source_name", "event_date", "institution", "transaction_type", "quantity", "price", "holder_category", "holding_pct", "delta_pct_points", "data_confidence", "confidence_weight", "effective_impact", "scoring_allowed"] if c in inst_evidence_v2.columns]
+            st.dataframe(inst_evidence_v2[show_cols], use_container_width=True, hide_index=True)
 
     st.markdown("#### Feed quality")
     st.dataframe(data_quality_table, use_container_width=True, hide_index=True)

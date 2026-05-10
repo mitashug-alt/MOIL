@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MOIL Institutional Evidence Row",
+  "type": "object",
+  "required": ["evidence_id", "evidence_type", "source_name", "data_confidence", "confidence_weight", "scoring_allowed"],
+  "properties": {
+    "evidence_id": {"type": "string"},
+    "evidence_type": {"type": "string", "examples": ["bulk_block_deal", "shareholding_delta", "sast_or_regulation_filing"]},
+    "source_name": {"type": "string"},
+    "source_tier": {"type": ["integer", "null"]},
+    "event_date": {"type": ["string", "null"]},
+    "institution": {"type": ["string", "null"]},
+    "transaction_type": {"type": ["string", "null"]},
+    "quantity": {"type": ["number", "null"]},
+    "price": {"type": ["number", "null"]},
+    "value_inr": {"type": ["number", "null"]},
+    "pct_equity": {"type": ["number", "null"]},
+    "holder_category": {"type": ["string", "null"]},
+    "holding_pct": {"type": ["number", "null"]},
+    "previous_holding_pct": {"type": ["number", "null"]},
+    "delta_pct_points": {"type": ["number", "null"]},
+    "raw_impact": {"type": "number"},
+    "data_confidence": {"type": "number", "minimum": 0, "maximum": 100},
+    "confidence_weight": {"type": "number", "minimum": 0, "maximum": 1},
+    "effective_impact": {"type": "number"},
+    "scoring_allowed": {"type": "boolean"},
+    "confidence_bucket": {"type": "string"},
+    "confidence_notes": {"type": "string"},
+    "source_url": {"type": ["string", "null"]},
+    "raw_text": {"type": ["string", "null"]}
+  }
+}

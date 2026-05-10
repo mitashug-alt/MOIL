@@ -148,3 +148,9 @@ Groq AI desk -> Source readiness v2
 Manual macro tracker -> Verified evidence CSV/JSON upload
 Data quality -> Data Quality Command Center + Evidence Viewer
 ```
+
+## Institutional Quality v2
+
+The smart-money tracker now converts NSE/Trendlyne/Screener/MOIL shareholding outputs into canonical institutional evidence rows. Each row receives a confidence score and a confidence-adjusted smart-money impact. Low-confidence or low-materiality rows are used for commentary only and do not move the regime score.
+
+See `INSTITUTIONAL_QUALITY_V2.md` for details.
