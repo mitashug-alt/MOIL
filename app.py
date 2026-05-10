@@ -47,6 +47,14 @@ from macro_radar import (
     read_news_tracker_csv,
     run_market_validation,
 )
+from auto_feeds import (
+    fetch_nse_deals_auto,
+    fetch_source_aware_macro_feed,
+    is_any_vendor_feed_configured,
+    is_serper_configured,
+    nse_deals_to_tracker_updates,
+    source_provider_status,
+)
 from telegram_alert import send_telegram_alert
 
 
@@ -141,6 +149,10 @@ if "groq_scores_applied" not in st.session_state:
     st.session_state.groq_scores_applied = None
 if "groq_commentary" not in st.session_state:
     st.session_state.groq_commentary = None
+if "auto_macro_diagnostics" not in st.session_state:
+    st.session_state.auto_macro_diagnostics = []
+if "nse_sync_diagnostics" not in st.session_state:
+    st.session_state.nse_sync_diagnostics = []
 
 # Data load ----------------------------------------------------------------
 st.title("MOIL Macro Radar")
@@ -357,15 +369,44 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("Groq / Llama 3.3 AI desk")
     config = get_groq_config()
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Groq configured", "Yes" if is_groq_configured() else "No")
-    c2.metric("Model", config["model"])
-    c3.metric("Key name", config["key_name"])
-    c4.metric("Project", config["project"])
-    st.caption("The API key is never displayed. Configure GROQ_API_KEY in Streamlit secrets, GitHub Codespaces secrets, or environment variables.")
+    c2.metric("Auto source pull", "Yes" if (is_any_vendor_feed_configured() or is_serper_configured()) else "No")
+    c3.metric("Model", config["model"])
+    c4.metric("Key name", config["key_name"])
+    c5.metric("Project", config["project"])
+    st.caption("API keys are never displayed. Groq scores supplied facts; source-specific vendor feeds are used first, then SERPER web-search fallback, then manual rows.")
 
     if not is_groq_configured():
         st.warning("Groq is not configured. Manual macro scoring and rule-based commentary remain active.")
+    if not (is_any_vendor_feed_configured() or is_serper_configured()):
+        st.info("Automatic physical macro pull requires either source-specific vendor feed URLs/API keys or SERPER_API_KEY. Without them, Groq scores the current manual/news tracker rows only.")
+
+    st.markdown("#### Source readiness")
+    st.dataframe(source_provider_status(), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Automatic physical macro feed")
+    st.write("Pull fresh source-aware data for SiMn prices, India steel output, China exports and China power/industrial stress, then let Groq convert the supplied facts/snippets into scores. Paid/vendor endpoints are used first; targeted web search is the fallback.")
+    auto_col1, auto_col2 = st.columns([1, 2])
+    with auto_col1:
+        if st.button("Pull auto macro feed", disabled=not (is_any_vendor_feed_configured() or is_serper_configured())):
+            with st.spinner("Pulling fresh macro data from configured sources/search fallback..."):
+                auto_macro, diagnostics = fetch_source_aware_macro_feed()
+                st.session_state.auto_macro_diagnostics = diagnostics
+                if not auto_macro.empty:
+                    st.session_state.manual_macro = normalize_manual_macro(auto_macro)
+                    st.session_state.groq_scores = None
+                    st.session_state.groq_scores_applied = None
+                    st.success(f"Auto macro feed applied to current session: {len(auto_macro)} rows.")
+                    st.rerun()
+                else:
+                    st.warning("No automatic macro rows were returned. Check SERPER_API_KEY and diagnostics.")
+    with auto_col2:
+        if st.session_state.auto_macro_diagnostics:
+            with st.expander("Auto macro feed diagnostics", expanded=False):
+                for item in st.session_state.auto_macro_diagnostics:
+                    st.write(f"- {item}")
+
     run_col, apply_col, clear_col = st.columns(3)
     with run_col:
         if st.button("Run Groq macro scoring", disabled=not (enable_groq_scoring and is_groq_configured())):
@@ -421,28 +462,23 @@ with tabs[5]:
     n1, n2, n3 = st.columns(3)
     with n1:
         if st.button("NSE Sync: Bulk/Block Deals"):
-            with st.spinner("Fetching NSE deal data..."):
-                deals = fetch_nse_deals("MOIL")
+            with st.spinner("Fetching NSE archive deal data..."):
+                deals, diagnostics = fetch_nse_deals_auto("MOIL")
+                st.session_state.nse_sync_diagnostics = diagnostics
                 if deals is not None and not deals.empty:
-                    updates = []
-                    for _, row in deals.head(10).iterrows():
-                        details = ", ".join(f"{k}: {v}" for k, v in row.to_dict().items() if pd.notna(v))[:500]
-                        updates.append(
-                            {
-                                "date": str(row.get("date", "")),
-                                "category": "Institutional",
-                                "item": str(row.get("clientName", row.get("name", "NSE deal"))),
-                                "value": str(row.get("type", "deal")),
-                                "impact": 1.0 if "BUY" in str(row.get("type", "")).upper() else -1.0 if "SELL" in str(row.get("type", "")).upper() else 0.0,
-                                "confidence": 0.70,
-                                "details": details,
-                                "source": "NSE bulk/block sync",
-                            }
-                        )
-                    st.session_state.news_tracker = pd.concat([pd.DataFrame(updates), st.session_state.news_tracker], ignore_index=True)
+                    updates = nse_deals_to_tracker_updates(deals)
+                    st.session_state.news_tracker = pd.concat([updates, st.session_state.news_tracker], ignore_index=True)
                     st.success(f"Added {len(updates)} NSE tracker rows.")
                 else:
-                    st.info("No MOIL NSE deals returned or endpoint blocked in this environment.")
+                    loaded = any("OK" in str(x) for x in diagnostics)
+                    if loaded:
+                        st.info("NSE archive feed loaded, but no MOIL bulk/block deal row was present in the latest archive.")
+                    else:
+                        st.warning("NSE archive endpoints were blocked or unavailable in this environment. Use the CSV upload fallback below.")
+                if diagnostics:
+                    with st.expander("NSE sync diagnostics", expanded=True):
+                        for item in diagnostics:
+                            st.write(f"- {item}")
     with n2:
         if st.button("Save news tracker"):
             DATA_DIR.mkdir(exist_ok=True)
@@ -452,6 +488,25 @@ with tabs[5]:
         buffer = io.StringIO()
         st.session_state.news_tracker.to_csv(buffer, index=False)
         st.download_button("Download tracker CSV", buffer.getvalue(), file_name="news_tracker.csv", mime="text/csv")
+
+    st.markdown("#### NSE CSV fallback")
+    st.write("If Codespaces blocks NSE, download bulk/block CSV from NSE in your browser and upload it here. The app will filter symbol MOIL and add institutional tracker rows.")
+    nse_upload = st.file_uploader("Upload NSE bulk/block CSV", type=["csv"], key="nse_csv_upload")
+    if nse_upload is not None:
+        try:
+            raw_deals = pd.read_csv(nse_upload)
+            from auto_feeds import _standardize_nse_deal_columns
+            normalized_deals = _standardize_nse_deal_columns(raw_deals, "uploaded")
+            moil_deals = normalized_deals[normalized_deals["symbol"].astype(str).str.upper() == "MOIL"] if not normalized_deals.empty else pd.DataFrame()
+            if not moil_deals.empty:
+                updates = nse_deals_to_tracker_updates(moil_deals)
+                st.session_state.news_tracker = pd.concat([updates, st.session_state.news_tracker], ignore_index=True)
+                st.success(f"Uploaded CSV added {len(updates)} MOIL deal row(s) to tracker.")
+                st.rerun()
+            else:
+                st.info("Uploaded NSE CSV parsed, but no MOIL rows were found.")
+        except Exception as exc:
+            st.error(f"Could not parse uploaded NSE CSV: {exc}")
 
     edited_news = st.data_editor(
         st.session_state.news_tracker,

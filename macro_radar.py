@@ -967,33 +967,17 @@ def run_market_validation(prices: pd.DataFrame, forward_days: Iterable[int] = (5
 
 
 def fetch_nse_deals(symbol: str = "MOIL") -> pd.DataFrame:
-    """Placeholder-friendly NSE deals fetcher.
+    """Fetch NSE bulk/block deals for a symbol with archive fallback.
 
-    NSE endpoints often require headers/cookies and may block cloud hosts. The
-    app calls this safely; failures return an empty DataFrame rather than
-    breaking the dashboard.
+    Uses the official nsearchives CSV when available. Returns an empty
+    DataFrame when the archive loads but no symbol-level deal exists today,
+    which is different from an endpoint failure. Diagnostics are exposed by
+    auto_feeds.fetch_nse_deals_auto in the UI.
     """
     try:
-        import requests
+        from auto_feeds import fetch_nse_deals_auto
 
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.nseindia.com/",
-        }
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
-        url = "https://www.nseindia.com/api/historical/bulk-deals"
-        response = session.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", []) if isinstance(payload, dict) else []
-        df = pd.DataFrame(data)
-        if df.empty:
-            return df
-        candidates = [c for c in df.columns if str(c).lower() in {"symbol", "sym"}]
-        if candidates:
-            df = df[df[candidates[0]].astype(str).str.upper() == symbol.upper()]
-        return df
+        deals, _diagnostics = fetch_nse_deals_auto(symbol)
+        return deals
     except Exception:
         return pd.DataFrame()

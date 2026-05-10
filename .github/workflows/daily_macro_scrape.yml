@@ -1,0 +1,39 @@
+name: Daily MOIL Macro Scrape
+
+on:
+  schedule:
+    # 10:00 AM IST = 04:30 UTC
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macro-scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scheduled macro scraper
+        run: |
+          python -m scrapers.run_daily_scrape
+
+      - name: Commit cached macro data
+        run: |
+          git config user.name "moil-macro-bot"
+          git config user.email "moil-macro-bot@users.noreply.github.com"
+          git add data/cache/latest_macro_data.json data/cache/moil_latest_price_data.json data/history/scrape_runs.jsonl data/raw/moil_pdfs || true
+          git commit -m "Update scheduled MOIL macro scrape" || echo "No changes to commit"
+          git push
