@@ -1,21 +1,32 @@
 """Cached backend-feed loader for MOIL Macro Radar.
 
-The scheduled scrapers write JSON files under data/cache. Streamlit should read
-these cached files instead of scraping external sites on every page load.
+Data Quality v2:
+- Scheduled scrapers write raw/cache JSON files under data/cache.
+- This module converts raw scraper output into canonical evidence rows.
+- Evidence rows receive data-confidence scores before Groq or regime scoring.
+- Streamlit should read cached JSON, not scrape live sites on page load.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from data_layer.evidence_store import (
+    CANONICAL_INDICATORS,
+    evidence_rows_from_macro_cache,
+    evidence_to_macro_rows,
+    evidence_to_source_readiness,
+)
+
 CACHE_DIR = Path("data/cache")
 LATEST_MACRO_PATH = CACHE_DIR / "latest_macro_data.json"
 LATEST_INSTITUTIONAL_PATH = CACHE_DIR / "institutional_activity_latest.json"
+
+CANONICAL_MACRO_INDICATORS = CANONICAL_INDICATORS
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -37,78 +48,26 @@ def load_latest_institutional_cache() -> dict[str, Any]:
     return _read_json(LATEST_INSTITUTIONAL_PATH)
 
 
-def macro_cache_to_manual_rows(cache: dict[str, Any]) -> pd.DataFrame:
+def macro_cache_to_evidence_rows(cache: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Return canonical evidence rows from latest macro cache."""
+    cache = cache if cache is not None else load_latest_macro_cache()
+    return evidence_rows_from_macro_cache(cache)
+
+
+def macro_cache_to_source_readiness(cache: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Return Data Quality v2 source-readiness table."""
+    evidence = macro_cache_to_evidence_rows(cache)
+    return evidence_to_source_readiness(evidence)
+
+
+def macro_cache_to_manual_rows(cache: dict[str, Any] | None = None) -> pd.DataFrame:
     """Convert scheduled scraper output into Groq-scoreable macro rows.
 
-    The output schema matches data/manual_macro_template.csv:
-    date, indicator, value, unit, status, score, commentary, source
+    Output keeps the legacy manual macro columns and adds confidence metadata:
+    data_confidence, confidence_weight, scoring_allowed, source_tier, exact_data.
     """
-    columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source"]
-    rows: list[dict[str, Any]] = []
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    if not isinstance(cache, dict) or not cache:
-        return pd.DataFrame(columns=columns)
-
-    # MOIL PDF observations: exact company-linked price/circular facts.
-    moil = cache.get("moil") or {}
-    if moil:
-        price_obs = moil.get("price_observations") or []
-        revisions = moil.get("category_revisions") or []
-        source_doc = moil.get("source_document") or {}
-        if price_obs or revisions:
-            facts = []
-            for item in price_obs[:8]:
-                facts.append(
-                    f"{item.get('product_family','MOIL')} {item.get('ore_code','')}: "
-                    f"{item.get('price_value')} {item.get('currency','INR')}/{item.get('unit','PMT')} "
-                    f"basis={item.get('basis','')} effective={item.get('effective_date','')}"
-                )
-            for item in revisions[:8]:
-                facts.append(
-                    f"{item.get('category')}: {item.get('direction')} "
-                    f"{item.get('change_pct')}% effective={item.get('effective_date','')}"
-                )
-            rows.append(
-                {
-                    "date": today,
-                    "indicator": "MOIL Ore / EMD Price Circular",
-                    "value": f"{len(price_obs)} price rows; {len(revisions)} category revisions",
-                    "unit": "INR/PMT / % revision",
-                    "status": "auto-cache",
-                    "score": 0.0,
-                    "commentary": " | ".join(facts)[:2500] or "MOIL cache present but no extracted values.",
-                    "source": source_doc.get("source_url") or "MOIL scheduled PDF scraper",
-                }
-            )
-
-    # HTML source observations: China steel/export/power and public proxies.
-    for source_result in cache.get("html_sources", []) or []:
-        source = source_result.get("source") or {}
-        observations = source_result.get("observations") or []
-        if not observations:
-            continue
-        indicator = source.get("indicator") or observations[0].get("indicator") or "Public macro table"
-        facts = []
-        for obs in observations[:8]:
-            facts.append(
-                f"period={obs.get('period')}; value={obs.get('value')}; "
-                f"raw={obs.get('raw_text','')[:220]}"
-            )
-        rows.append(
-            {
-                "date": today,
-                "indicator": indicator,
-                "value": f"{len(observations)} cached public observation(s)",
-                "unit": "public table/snippet",
-                "status": "auto-cache",
-                "score": 0.0,
-                "commentary": " | ".join(facts)[:2500],
-                "source": source.get("name") or source.get("url") or "scheduled HTML scraper",
-            }
-        )
-
-    return pd.DataFrame(rows, columns=columns)
+    evidence = macro_cache_to_evidence_rows(cache)
+    return evidence_to_macro_rows(evidence)
 
 
 def institutional_cache_summary(cache: dict[str, Any]) -> dict[str, Any]:

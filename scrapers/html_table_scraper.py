@@ -128,6 +128,36 @@ class HtmlTableScraper:
 
 DEFAULT_HTML_SOURCES = [
     HtmlSourceConfig(
+        name="BigMint Silico Manganese Prices",
+        url="https://www.bigmint.co/prices/ferrous/ferro-alloy/silico-manganese",
+        indicator="Silico-Manganese Prices",
+        country="India",
+        frequency="daily",
+        keywords=["silico manganese", "simn", "raipur", "durgapur", "vizag", "60-14"],
+        source_quality="industry price page; exact values may be gated",
+        transform_hint="Extract visible India SiMn HC 60-14 regional rows; if exact price is gated, retain timestamp/region facts only.",
+    ),
+    HtmlSourceConfig(
+        name="OfBusiness Silico Manganese Category",
+        url="https://www.ofbusiness.com/category/silico-manganese",
+        indicator="Silico-Manganese Prices",
+        country="India",
+        frequency="daily",
+        keywords=["silico manganese", "price", "mt", "raipur", "durgapur", "vizag"],
+        source_quality="public B2B raw material page; asking-price proxy",
+        transform_hint="Extract visible SiMn category snippets; treat supplier/asking prices as lower-confidence than assessed prices.",
+    ),
+    HtmlSourceConfig(
+        name="Worldsteel India Crude Steel Production",
+        url="https://worldsteel.org/media/press-releases/",
+        indicator="India Crude Steel Production",
+        country="India",
+        frequency="monthly",
+        keywords=["crude steel production", "india", "mt"],
+        source_quality="industry association monthly production release",
+        transform_hint="Find latest monthly crude-steel production release and India-specific snippets.",
+    ),
+    HtmlSourceConfig(
         name="MacroMicro China Crude Steel Production",
         url="https://en.macromicro.me/collections/20/mm-steel/221/china-crude-steel-production",
         indicator="China Crude Steel Production",

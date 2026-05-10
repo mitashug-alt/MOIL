@@ -2,7 +2,7 @@
   "ok": true,
   "symbol": "MOIL",
   "company_name": "MOIL Ltd",
-  "scraped_at": "2026-05-10T06:15:32.711467+00:00",
+  "scraped_at": "2026-05-10T07:17:34.838110+00:00",
   "diagnostics": [
     "bulk: failed HTTPSConnectionPool(host='nsearchives.nseindia.com', port=443): Read timed out. (read timeout=30)",
     "block: failed HTTPSConnectionPool(host='nsearchives.nseindia.com', port=443): Read timed out. (read timeout=30)",
@@ -30,7 +30,7 @@
       "price": 342.97,
       "value_inr": 387230621.47,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.833264+00:00",
+      "scraped_at": "2026-05-10T07:17:31.688946+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 02 May 2025 | 342.97 | 1129051 | Yes | NSE"
     },
@@ -48,7 +48,7 @@
       "price": 549.34,
       "value_inr": 664253138.5600001,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.833443+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689102+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 24 Jun 2024 | 549.34 | 1209184 | Yes | NSE"
     },
@@ -66,7 +66,7 @@
       "price": 479.4,
       "value_inr": 681337662.0,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.833575+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689229+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 17 May 2024 | 479.4 | 1421230 | Yes | NSE"
     },
@@ -84,7 +84,7 @@
       "price": 437.5,
       "value_inr": 630255937.5,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.833690+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689341+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 02 May 2024 | 437.5 | 1440585 | Yes | NSE"
     },
@@ -102,7 +102,7 @@
       "price": 421.54,
       "value_inr": 574967070.72,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.833813+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689442+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 26 Apr 2024 | 421.54 | 1363968 | Yes | NSE"
     },
@@ -120,7 +120,7 @@
       "price": 417.54,
       "value_inr": 465154173.90000004,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.833921+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689542+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 25 Apr 2024 | 417.54 | 1114035 | Yes | NSE"
     },
@@ -138,7 +138,7 @@
       "price": 395.05,
       "value_inr": 470345739.90000004,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834020+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689640+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 24 Apr 2024 | 395.05 | 1190598 | Yes | NSE"
     },
@@ -156,7 +156,7 @@
       "price": 365.6,
       "value_inr": 466627344.8,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834118+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689736+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 23 Apr 2024 | 365.6 | 1276333 | Yes | NSE"
     },
@@ -174,7 +174,7 @@
       "price": 327.44,
       "value_inr": 579642801.4399999,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834214+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689855+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 16 Jan 2024 | 327.44 | 1770226 | Yes | NSE"
     },
@@ -192,7 +192,7 @@
       "price": 297.64,
       "value_inr": 510618683.12,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834307+00:00",
+      "scraped_at": "2026-05-10T07:17:31.689951+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 20 Nov 2023 | 297.64 | 1715558 | Yes | NSE"
     },
@@ -210,7 +210,7 @@
       "price": 253.11,
       "value_inr": 428790360.57000005,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834400+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690045+00:00",
       "confidence": 0.7,
       "raw_text": "GRAVITON RESEARCH CAPITAL LLP | Bulk | Sell | 12 Oct 2023 | 253.11 | 1694087 | Yes | NSE"
     },
@@ -228,7 +228,7 @@
       "price": 232.51,
       "value_inr": 209112518.7,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834492+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690138+00:00",
       "confidence": 0.7,
       "raw_text": "BT FUNDS MANAGEMENT LTD AS TRUSTEE OF BT ASIAN SHARE FUND | Bulk | Sell | 28 Feb 2014 | 232.51 | 899370 | No | NSE"
     },
@@ -246,7 +246,7 @@
       "price": 454.94,
       "value_inr": 414540873.06,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834642+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690290+00:00",
       "confidence": 0.7,
       "raw_text": "CROSSEAS CAPITAL SERVICES PVT. LTD. | Bulk | Sell | 22 Dec 2010 | 454.94 | 911199 | No | NSE"
     },
@@ -264,7 +264,7 @@
       "price": 465.88,
       "value_inr": 503844095.32,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834735+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690380+00:00",
       "confidence": 0.7,
       "raw_text": "CROSSEAS CAPITAL SERVICES PVT. LTD. | Bulk | Sell | 16 Dec 2010 | 465.88 | 1081489 | Yes | NSE"
     },
@@ -282,7 +282,7 @@
       "price": 513.22,
       "value_inr": 286288999.38,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.834966+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690584+00:00",
       "confidence": 0.7,
       "raw_text": "SHANKAR GROWTH FUND LTD | Bulk | Sell | 15 Dec 2010 | 513.22 | 557829 | No | NSE"
     },
@@ -300,7 +300,7 @@
       "price": 518.56,
       "value_inr": 539417520.3199999,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.835028+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690644+00:00",
       "confidence": 0.7,
       "raw_text": "NAMAN SECURITIES &amp; FINANCE PVT. LTD | Bulk | Sell | 15 Dec 2010 | 518.56 | 1040222 | No | NSE"
     },
@@ -318,7 +318,7 @@
       "price": 510.1,
       "value_inr": 735426983.1,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.835088+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690702+00:00",
       "confidence": 0.7,
       "raw_text": "MANIPUT INVESTMENTS PVT. LTD. | Bulk | Sell | 15 Dec 2010 | 510.1 | 1441731 | Yes | NSE"
     },
@@ -336,7 +336,7 @@
       "price": 512.23,
       "value_inr": 923840099.95,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.835147+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690761+00:00",
       "confidence": 0.7,
       "raw_text": "GENUINE STOCK BROKERS PVT LTD | Bulk | Sell | 15 Dec 2010 | 512.23 | 1803565 | Yes | NSE"
     },
@@ -354,7 +354,7 @@
       "price": 511.25,
       "value_inr": 953136667.5,
       "deal_type": "Bulk/Block",
-      "scraped_at": "2026-05-10T06:15:29.835205+00:00",
+      "scraped_at": "2026-05-10T07:17:31.690858+00:00",
       "confidence": 0.7,
       "raw_text": "CROSSEAS CAPITAL SERVICES PVT. LTD. | Bulk | Sell | 15 Dec 2010 | 511.25 | 1864326 | No | NSE"
     }
@@ -371,7 +371,7 @@
       "previous_period": null,
       "previous_holding_pct": 64.68,
       "delta_pct_points": 0.0,
-      "scraped_at": "2026-05-10T06:15:30.761217+00:00",
+      "scraped_at": "2026-05-10T07:17:32.858625+00:00",
       "confidence": 0.55,
       "raw_text": "Promoters + | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68%"
     },
@@ -386,7 +386,7 @@
       "previous_period": null,
       "previous_holding_pct": 5.72,
       "delta_pct_points": 0.4400000000000004,
-      "scraped_at": "2026-05-10T06:15:30.761383+00:00",
+      "scraped_at": "2026-05-10T07:17:32.858830+00:00",
       "confidence": 0.55,
       "raw_text": "FIIs + | 6.16% | 5.72% | 4.71% | 2.35% | 3.48% | 4.87% | 3.12% | 3.25% | 6.16% | 6.05% | 4.83% | 4.16%"
     },
@@ -401,7 +401,7 @@
       "previous_period": null,
       "previous_holding_pct": 12.73,
       "delta_pct_points": -0.40000000000000036,
-      "scraped_at": "2026-05-10T06:15:30.761526+00:00",
+      "scraped_at": "2026-05-10T07:17:32.859005+00:00",
       "confidence": 0.55,
       "raw_text": "DIIs + | 12.33% | 12.73% | 11.29% | 12.35% | 10.00% | 7.92% | 8.24% | 7.65% | 6.64% | 7.12% | 6.81% | 7.63%"
     },
@@ -416,7 +416,7 @@
       "previous_period": null,
       "previous_holding_pct": 16.88,
       "delta_pct_points": -0.03999999999999915,
-      "scraped_at": "2026-05-10T06:15:30.761666+00:00",
+      "scraped_at": "2026-05-10T07:17:32.859176+00:00",
       "confidence": 0.55,
       "raw_text": "Public + | 16.84% | 16.88% | 19.29% | 20.60% | 21.83% | 22.52% | 23.94% | 24.41% | 22.52% | 22.13% | 23.68% | 23.52%"
     },
@@ -431,7 +431,7 @@
       "previous_period": null,
       "previous_holding_pct": 65.69,
       "delta_pct_points": -0.10999999999999943,
-      "scraped_at": "2026-05-10T06:15:30.764642+00:00",
+      "scraped_at": "2026-05-10T07:17:32.863082+00:00",
       "confidence": 0.55,
       "raw_text": "Promoters + | 65.58% | 65.69% | 65.69% | 64.35% | 64.35% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68%"
     },
@@ -446,7 +446,7 @@
       "previous_period": null,
       "previous_holding_pct": 3.74,
       "delta_pct_points": -1.27,
-      "scraped_at": "2026-05-10T06:15:30.764786+00:00",
+      "scraped_at": "2026-05-10T07:17:32.863256+00:00",
       "confidence": 0.55,
       "raw_text": "FIIs + | 2.47% | 3.74% | 3.89% | 2.92% | 4.72% | 5.57% | 5.97% | 2.35% | 3.25% | 4.16%"
     },
@@ -461,7 +461,7 @@
       "previous_period": null,
       "previous_holding_pct": 13.66,
       "delta_pct_points": 2.960000000000001,
-      "scraped_at": "2026-05-10T06:15:30.764944+00:00",
+      "scraped_at": "2026-05-10T07:17:32.863426+00:00",
       "confidence": 0.55,
       "raw_text": "DIIs + | 16.62% | 13.66% | 13.66% | 14.85% | 13.82% | 12.20% | 12.06% | 12.35% | 7.65% | 7.63%"
     },
@@ -476,7 +476,7 @@
       "previous_period": null,
       "previous_holding_pct": 16.91,
       "delta_pct_points": -1.5700000000000003,
-      "scraped_at": "2026-05-10T06:15:30.765086+00:00",
+      "scraped_at": "2026-05-10T07:17:32.863595+00:00",
       "confidence": 0.55,
       "raw_text": "Public + | 15.34% | 16.91% | 16.76% | 17.87% | 17.11% | 17.54% | 17.28% | 20.60% | 24.41% | 23.52%"
     }
@@ -491,7 +491,7 @@
       "institution": "FII",
       "description": "FII holding fell by -1.27 percentage points QoQ.",
       "score_impact": -1.0,
-      "created_at": "2026-05-10T06:15:32.711359+00:00",
+      "created_at": "2026-05-10T07:17:34.838007+00:00",
       "evidence": [
         {
           "observation_id": "8848354717c04ac02d0c4afe",
@@ -504,7 +504,7 @@
           "previous_period": null,
           "previous_holding_pct": 3.74,
           "delta_pct_points": -1.27,
-          "scraped_at": "2026-05-10T06:15:30.764786+00:00",
+          "scraped_at": "2026-05-10T07:17:32.863256+00:00",
           "confidence": 0.55,
           "raw_text": "FIIs + | 2.47% | 3.74% | 3.89% | 2.92% | 4.72% | 5.57% | 5.97% | 2.35% | 3.25% | 4.16%"
         }
@@ -518,7 +518,7 @@
       "institution": "DII",
       "description": "DII holding rose by 2.96 percentage points QoQ.",
       "score_impact": 1.0,
-      "created_at": "2026-05-10T06:15:32.711440+00:00",
+      "created_at": "2026-05-10T07:17:34.838085+00:00",
       "evidence": [
         {
           "observation_id": "fecc7b4ee49ebf42223065bf",
@@ -531,7 +531,7 @@
           "previous_period": null,
           "previous_holding_pct": 13.66,
           "delta_pct_points": 2.960000000000001,
-          "scraped_at": "2026-05-10T06:15:30.764944+00:00",
+          "scraped_at": "2026-05-10T07:17:32.863426+00:00",
           "confidence": 0.55,
           "raw_text": "DIIs + | 16.62% | 13.66% | 13.66% | 14.85% | 13.82% | 12.20% | 12.06% | 12.35% | 7.65% | 7.63%"
         }

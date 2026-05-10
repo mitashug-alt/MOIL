@@ -116,3 +116,35 @@ GitHub Actions workflows:
 ```
 
 Use official downloads and permitted public pages first. Do not scrape on every dashboard page load.
+
+## Data Quality v2 Upgrade
+
+This build adds a source-governed evidence pipeline. Scheduled scrapers and verified uploads are converted into canonical evidence rows with a 0-100 data confidence score. Groq/Llama 3.3 now returns both a raw `signal_score` and a confidence-adjusted `effective_score`; only the effective score moves the regime model.
+
+Confidence gates:
+
+```text
+>=80     full score impact
+60-79    70% score impact
+40-59    40% score impact
+<40      commentary-only / no regime impact
+```
+
+New files:
+
+```text
+data_layer/source_registry.yaml
+data_layer/confidence_engine.py
+data_layer/evidence_store.py
+data_layer/validators.py
+schemas/evidence_row.schema.json
+DATA_QUALITY_V2.md
+```
+
+New app surfaces:
+
+```text
+Groq AI desk -> Source readiness v2
+Manual macro tracker -> Verified evidence CSV/JSON upload
+Data quality -> Data Quality Command Center + Evidence Viewer
+```

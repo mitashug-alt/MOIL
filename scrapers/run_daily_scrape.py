@@ -6,10 +6,16 @@ from pathlib import Path
 
 try:
     from .html_table_scraper import DEFAULT_HTML_SOURCES, HtmlTableScraper
+    from .india_steel_scraper import IndiaSteelScraper
     from .moil_pdf_scraper import MoilPdfScraper
-except Exception:  # pragma: no cover
-    from html_table_scraper import DEFAULT_HTML_SOURCES, HtmlTableScraper
-    from moil_pdf_scraper import MoilPdfScraper
+except ImportError as exc:  # pragma: no cover
+    message = str(exc)
+    if "attempted relative import" in message or "no known parent package" in message:
+        from html_table_scraper import DEFAULT_HTML_SOURCES, HtmlTableScraper
+        from india_steel_scraper import IndiaSteelScraper
+        from moil_pdf_scraper import MoilPdfScraper
+    else:
+        raise
 
 
 def now() -> str:
@@ -26,6 +32,11 @@ def main() -> None:
         result["moil"] = MoilPdfScraper().scrape_latest()
     except Exception as exc:  # noqa: BLE001
         result["errors"].append({"source": "MOIL PDF", "error": str(exc)})
+
+    try:
+        result["html_sources"].append(IndiaSteelScraper().scrape_latest())
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append({"source": "India Steel Monthly Report", "error": str(exc)})
 
     html = HtmlTableScraper()
     for config in DEFAULT_HTML_SOURCES:

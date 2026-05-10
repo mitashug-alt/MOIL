@@ -91,38 +91,108 @@ def is_any_vendor_feed_configured() -> bool:
     return False
 
 
+
+def is_cached_macro_feed_available() -> bool:
+    """Return True when scheduled backend cache has at least one macro row.
+
+    This lets the UI treat data/cache/latest_macro_data.json as an automatic
+    source, even when no paid vendor endpoint or SERPER_API_KEY is configured.
+    """
+    try:
+        from backend_cache_loader import load_latest_macro_cache, macro_cache_to_manual_rows
+
+        cache = load_latest_macro_cache()
+        rows = macro_cache_to_manual_rows(cache)
+        return rows is not None and not rows.empty
+    except Exception:
+        return False
+
+
+def cached_macro_indicators() -> set[str]:
+    """Return canonical indicator names currently available in backend cache."""
+    try:
+        from backend_cache_loader import load_latest_macro_cache, macro_cache_to_manual_rows
+
+        cache = load_latest_macro_cache()
+        rows = macro_cache_to_manual_rows(cache)
+        if rows is None or rows.empty or "indicator" not in rows.columns:
+            return set()
+        return {str(x).strip() for x in rows["indicator"].dropna().tolist() if str(x).strip()}
+    except Exception:
+        return set()
+
 def source_provider_status() -> pd.DataFrame:
-    """Expose data-source readiness to the UI without displaying secrets."""
+    """Expose source readiness to the UI without displaying secrets.
+
+    Data Quality v2 prefers the scheduled evidence cache. If no cache evidence
+    exists for an indicator, the table still shows vendor/search/manual fallback
+    readiness.
+    """
+    try:
+        from backend_cache_loader import load_latest_macro_cache, macro_cache_to_source_readiness
+
+        cache = load_latest_macro_cache()
+        readiness = macro_cache_to_source_readiness(cache)
+    except Exception:
+        readiness = pd.DataFrame()
+
+    cache_map = {}
+    if readiness is not None and not readiness.empty and "indicator" in readiness.columns:
+        cache_map = {str(row["indicator"]): row.to_dict() for _, row in readiness.iterrows()}
+
     rows = []
+    serper_ready = is_serper_configured()
+
     for indicator, meta in SOURCE_REGISTRY.items():
         endpoint_secret = str(meta.get("endpoint_secret", ""))
         api_key_secret = str(meta.get("api_key_secret", ""))
         endpoint_configured = bool(endpoint_secret and _get_secret(endpoint_secret))
         api_key_configured = bool(api_key_secret and _get_secret(api_key_secret))
-        if endpoint_configured:
+        cached = cache_map.get(indicator, {})
+        cache_row_found = bool(cached) and int(cached.get("evidence_rows", 0) or 0) > 0
+
+        if cache_row_found and bool(cached.get("scoring_allowed", False)):
+            mode = "scheduled evidence cache"
+            status = "configured/cache"
+        elif cache_row_found:
+            mode = "scheduled cache commentary-only"
+            status = "low-confidence"
+        elif endpoint_configured:
             mode = "vendor endpoint"
             status = "configured"
-        elif is_serper_configured():
+        elif serper_ready:
             mode = "targeted web search fallback"
             status = "fallback"
         else:
             mode = "manual only"
             status = "not configured"
+
         rows.append(
             {
                 "indicator": indicator,
                 "priority_sources": ", ".join(meta.get("priority_sources", [])),
+                "best_source_found": cached.get("best_source_found", "None"),
+                "source_tier": cached.get("source_tier", ""),
+                "exact_data": cached.get("exact_data", False),
+                "latest_period": cached.get("latest_period", ""),
+                "evidence_rows": cached.get("evidence_rows", 0),
+                "confidence": cached.get("confidence", 0),
+                "confidence_label": cached.get("confidence_label", "missing"),
+                "confidence_weight": cached.get("confidence_weight", 0.0),
+                "scoring_allowed": cached.get("scoring_allowed", False),
                 "source_type": meta.get("source_type", ""),
+                "scheduled_cache_row": cache_row_found,
                 "endpoint_secret": endpoint_secret,
                 "endpoint_configured": endpoint_configured,
                 "api_key_secret": api_key_secret,
                 "api_key_configured": api_key_configured,
-                "fallback_search": is_serper_configured(),
+                "fallback_search": serper_ready,
                 "mode": mode,
                 "status": status,
-                "notes": meta.get("notes", ""),
+                "notes": cached.get("notes") or meta.get("notes", ""),
             }
         )
+
     return pd.DataFrame(rows)
 
 
@@ -280,7 +350,7 @@ def fetch_source_aware_macro_feed(max_results_per_query: int = 5) -> Tuple[pd.Da
     The function returns rows in the same schema as the manual macro table so
     the existing Groq scorer can evaluate them.
     """
-    columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source"]
+    columns = None  # preserve extended Data Quality v2 columns when present
     rows = []
     diagnostics: List[str] = []
 
@@ -322,6 +392,14 @@ def fetch_source_aware_macro_feed(max_results_per_query: int = 5) -> Tuple[pd.Da
                         "score": 0.0,
                         "commentary": text[:2200],
                         "source": ", ".join(meta.get("priority_sources", [])),
+                        "data_confidence": 85,
+                        "confidence_weight": 1.0,
+                        "scoring_allowed": True,
+                        "confidence_label": "high",
+                        "source_type": str(meta.get("source_type", "vendor feed")),
+                        "source_tier": 1,
+                        "exact_data": True,
+                        "confidence_notes": "Configured vendor endpoint; assumed licensed/controlled feed.",
                     }
                 )
                 continue
@@ -342,7 +420,8 @@ def fetch_source_aware_macro_feed(max_results_per_query: int = 5) -> Tuple[pd.Da
                         f"Preferred sources: {', '.join(meta.get('priority_sources', []))}"
                     )
 
-    return pd.DataFrame(rows, columns=columns), diagnostics
+    out = pd.DataFrame(rows)
+    return out, diagnostics
 
 
 def fetch_serper_macro_feed(queries: Dict[str, str] | None = None, max_results_per_query: int = 5) -> Tuple[pd.DataFrame, List[str]]:
@@ -353,7 +432,7 @@ def fetch_serper_macro_feed(queries: Dict[str, str] | None = None, max_results_p
     """
     api_key = _get_secret("SERPER_API_KEY")
     diagnostics: List[str] = []
-    columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source"]
+    columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source", "data_confidence", "confidence_weight", "scoring_allowed", "confidence_label", "source_type", "source_tier", "exact_data", "confidence_notes"]
     if not api_key:
         return pd.DataFrame(columns=columns), ["SERPER_API_KEY is not configured. Add it to Streamlit secrets or Codespaces secrets for automatic web pull."]
 
@@ -393,6 +472,14 @@ def fetch_serper_macro_feed(queries: Dict[str, str] | None = None, max_results_p
                     "score": 0.0,
                     "commentary": " | ".join(snippets)[:1800],
                     "source": " | ".join(sources[:3]) if sources else "Serper web search",
+                    "data_confidence": 25,
+                    "confidence_weight": 0.0,
+                    "scoring_allowed": False,
+                    "confidence_label": "commentary-only",
+                    "source_type": "targeted_search_snippet",
+                    "source_tier": 5,
+                    "exact_data": False,
+                    "confidence_notes": "Search snippets are context only; no regime score impact unless verified.",
                 }
             )
             diagnostics.append(f"{indicator}: pulled {len(snippets)} search result(s)")

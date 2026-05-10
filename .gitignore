@@ -6,3 +6,6 @@ __pycache__/
 *.zip
 backup_before_*/
 grok upgrade/
+
+data/cache/_uploaded_verified_evidence.csv
+data/cache/_uploaded_verified_evidence.json

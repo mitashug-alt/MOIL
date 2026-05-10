@@ -51,10 +51,20 @@ from auto_feeds import (
     fetch_nse_deals_auto,
     fetch_source_aware_macro_feed,
     is_any_vendor_feed_configured,
+    is_cached_macro_feed_available,
     is_serper_configured,
     nse_deals_to_tracker_updates,
     source_provider_status,
 )
+from backend_cache_loader import (
+    load_latest_institutional_cache,
+    load_latest_macro_cache,
+    macro_cache_to_evidence_rows,
+    macro_cache_to_source_readiness,
+    institutional_cache_summary,
+)
+from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from_file
+from data_layer.validators import validate_evidence_dataframe
 from telegram_alert import send_telegram_alert
 
 
@@ -153,6 +163,8 @@ if "auto_macro_diagnostics" not in st.session_state:
     st.session_state.auto_macro_diagnostics = []
 if "nse_sync_diagnostics" not in st.session_state:
     st.session_state.nse_sync_diagnostics = []
+if "evidence_validation_warnings" not in st.session_state:
+    st.session_state.evidence_validation_warnings = []
 
 # Data load ----------------------------------------------------------------
 st.title("MOIL Macro Radar")
@@ -325,6 +337,27 @@ with tabs[3]:
         st.session_state.manual_macro = normalize_manual_macro(pd.read_csv(uploaded))
         st.success("Uploaded manual macro table applied to current session.")
 
+    evidence_upload = st.file_uploader("Upload verified evidence CSV/JSON", type=["csv", "json"], key="verified_evidence_upload")
+    if evidence_upload is not None:
+        try:
+            suffix = ".json" if evidence_upload.name.lower().endswith(".json") else ".csv"
+            tmp_path = Path("data/cache/_uploaded_verified_evidence" + suffix)
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_bytes(evidence_upload.getvalue())
+            evidence_df = load_evidence_from_file(tmp_path)
+            evidence_df, warnings = validate_evidence_dataframe(evidence_df)
+            st.session_state.evidence_validation_warnings = warnings
+            st.session_state.manual_macro = normalize_manual_macro(evidence_to_macro_rows(evidence_df))
+            st.session_state.groq_scores = None
+            st.session_state.groq_scores_applied = None
+            st.success(f"Verified evidence upload converted into {len(st.session_state.manual_macro)} macro row(s).")
+            if warnings:
+                with st.expander("Evidence validation warnings", expanded=True):
+                    for warning in warnings:
+                        st.write(f"- {warning}")
+        except Exception as exc:
+            st.error(f"Could not parse verified evidence upload: {exc}")
+
     edited_manual = st.data_editor(
         st.session_state.manual_macro,
         use_container_width=True,
@@ -370,8 +403,9 @@ with tabs[4]:
     st.subheader("Groq / Llama 3.3 AI desk")
     config = get_groq_config()
     c1, c2, c3, c4, c5 = st.columns(5)
+    auto_source_ready = is_any_vendor_feed_configured() or is_serper_configured() or is_cached_macro_feed_available()
     c1.metric("Groq configured", "Yes" if is_groq_configured() else "No")
-    c2.metric("Auto source pull", "Yes" if (is_any_vendor_feed_configured() or is_serper_configured()) else "No")
+    c2.metric("Auto source pull", "Yes" if auto_source_ready else "No")
     c3.metric("Model", config["model"])
     c4.metric("Key name", config["key_name"])
     c5.metric("Project", config["project"])
@@ -379,17 +413,22 @@ with tabs[4]:
 
     if not is_groq_configured():
         st.warning("Groq is not configured. Manual macro scoring and rule-based commentary remain active.")
-    if not (is_any_vendor_feed_configured() or is_serper_configured()):
-        st.info("Automatic physical macro pull requires either source-specific vendor feed URLs/API keys or SERPER_API_KEY. Without them, Groq scores the current manual/news tracker rows only.")
+    if not auto_source_ready:
+        st.info("Automatic physical macro pull requires scheduled backend cache output, source-specific vendor feed URLs/API keys, or SERPER_API_KEY. Without them, Groq scores the current manual/news tracker rows only.")
 
-    st.markdown("#### Source readiness")
-    st.dataframe(source_provider_status(), use_container_width=True, hide_index=True)
+    st.markdown("#### Source readiness v2")
+    readiness_df = source_provider_status()
+    st.dataframe(readiness_df, use_container_width=True, hide_index=True)
+    if not readiness_df.empty:
+        blocked = readiness_df[readiness_df.get("scoring_allowed", False) == False] if "scoring_allowed" in readiness_df.columns else pd.DataFrame()
+        if not blocked.empty:
+            st.caption("Rows below the confidence threshold are commentary-only and do not move the regime score.")
 
     st.markdown("#### Automatic physical macro feed")
     st.write("Pull fresh source-aware data for SiMn prices, India steel output, China exports and China power/industrial stress, then let Groq convert the supplied facts/snippets into scores. Paid/vendor endpoints are used first; targeted web search is the fallback.")
     auto_col1, auto_col2 = st.columns([1, 2])
     with auto_col1:
-        if st.button("Pull auto macro feed", disabled=not (is_any_vendor_feed_configured() or is_serper_configured())):
+        if st.button("Pull auto macro feed", disabled=not auto_source_ready):
             with st.spinner("Pulling fresh macro data from configured sources/search fallback..."):
                 auto_macro, diagnostics = fetch_source_aware_macro_feed()
                 st.session_state.auto_macro_diagnostics = diagnostics
@@ -411,11 +450,19 @@ with tabs[4]:
     with run_col:
         if st.button("Run Groq macro scoring", disabled=not (enable_groq_scoring and is_groq_configured())):
             with st.spinner("Groq/Llama 3.3 is scoring macro indicators..."):
+                source_readiness_records = source_provider_status().to_dict(orient="records")
                 regime_context = {
                     "label": summary.label,
                     "normalized_score": summary.normalized_score,
                     "confidence_score": summary.confidence_score,
                     "data_quality_score": summary.data_quality_score,
+                    "source_readiness": source_readiness_records,
+                    "confidence_policy": {
+                        ">=80": "full score impact",
+                        "60-79": "70% score impact",
+                        "40-59": "40% score impact",
+                        "<40": "commentary only; no regime impact",
+                    },
                 }
                 result = score_macro_with_groq(st.session_state.manual_macro, snapshot, regime_context, st.session_state.news_tracker)
                 st.session_state.groq_scores = result
@@ -543,6 +590,7 @@ with tabs[6]:
                     "anomalies": anomalies.to_dict(orient="records") if not anomalies.empty else [],
                     "technical_levels": technical_levels,
                     "news_tracker": st.session_state.news_tracker.to_dict(orient="records") if not st.session_state.news_tracker.empty else [],
+                    "source_readiness": source_provider_status().to_dict(orient="records"),
                 }
                 st.session_state.groq_commentary = generate_groq_commentary(context)
 
@@ -605,7 +653,42 @@ with tabs[7]:
     st.write("Track hit rate, false positives, average 5D/10D/20D forward return, maximum drawdown, data gaps and factor changes monthly.")
 
 with tabs[8]:
-    st.subheader("Data quality")
+    st.subheader("Data Quality Command Center")
+    macro_cache = load_latest_macro_cache()
+    evidence_df = macro_cache_to_evidence_rows(macro_cache)
+    readiness_v2 = macro_cache_to_source_readiness(macro_cache)
+    inst_cache = load_latest_institutional_cache()
+    inst_summary = institutional_cache_summary(inst_cache)
+
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Evidence rows", int(len(evidence_df)) if evidence_df is not None else 0)
+    if readiness_v2 is not None and not readiness_v2.empty:
+        scoring_count = int(readiness_v2["scoring_allowed"].sum()) if "scoring_allowed" in readiness_v2.columns else 0
+        avg_conf = float(pd.to_numeric(readiness_v2.get("confidence", pd.Series(dtype=float)), errors="coerce").fillna(0).mean())
+    else:
+        scoring_count = 0
+        avg_conf = 0.0
+    q2.metric("Scoring-ready indicators", scoring_count)
+    q3.metric("Avg source confidence", f"{avg_conf:.0f}/100")
+    q4.metric("Smart money signals", inst_summary.get("smart_money_signals", 0))
+
+    st.markdown("#### Source readiness v2")
+    st.dataframe(readiness_v2, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Evidence viewer")
+    if evidence_df is None or evidence_df.empty:
+        st.info("No cached evidence rows found. Run python -m scrapers.run_daily_scrape.")
+    else:
+        show_cols = [c for c in ["indicator", "source_name", "source_tier", "exact_data", "period", "value", "unit", "data_confidence", "confidence_weight", "scoring_allowed", "confidence_label", "confidence_notes"] if c in evidence_df.columns]
+        st.dataframe(evidence_df[show_cols].sort_values("data_confidence", ascending=False), use_container_width=True, hide_index=True)
+        with st.expander("Raw evidence snippets", expanded=False):
+            selected_indicator = st.selectbox("Evidence indicator", sorted(evidence_df["indicator"].dropna().unique().tolist())) if "indicator" in evidence_df.columns else None
+            if selected_indicator:
+                subset = evidence_df[evidence_df["indicator"] == selected_indicator]
+                for _, row in subset.head(10).iterrows():
+                    st.markdown(f"**{row.get('source_name','source')} — confidence {row.get('data_confidence',0)}/100**")
+                    st.code(str(row.get("raw_text", ""))[:1200])
+
     st.markdown("#### Feed quality")
     st.dataframe(data_quality_table, use_container_width=True, hide_index=True)
     st.markdown("#### Ticker map and rows")
