@@ -15,6 +15,7 @@ from .confidence_engine import (
     scoring_allowed,
     source_tier_from_name,
 )
+from .macro_quality_rules import assess_macro_evidence_quality
 
 CANONICAL_INDICATORS = [
     "Silico-Manganese Prices",
@@ -132,6 +133,21 @@ def _make_evidence_row(
     canonical = canonicalize_indicator(indicator, source_name, raw_text)
     tier = source_tier or source_tier_from_name(source_name, source_type)
     scraped = _safe_str(scraped_at) or _now_iso()
+
+    quality = assess_macro_evidence_quality(
+        indicator=canonical,
+        source_name=source_name,
+        source_type=source_type,
+        value=value,
+        unit=unit,
+        period=period,
+        raw_text=raw_text,
+        exact_data=exact_data,
+        parser_method=parser_method,
+    )
+    unit = quality.get("normalized_unit") or unit
+    exact_data = bool(quality.get("valid_exact_data", False))
+
     confidence = compute_data_confidence(
         source_tier=tier,
         source_name=source_name,
@@ -146,7 +162,9 @@ def _make_evidence_row(
         extraction_method=parser_method,
         cross_source_confirmed=cross_source_confirmed,
     )
-    data_conf = confidence["data_confidence"]
+    data_conf = int(min(confidence["data_confidence"], quality.get("confidence_cap", 100)))
+    row_scoring_allowed = bool(quality.get("quality_scoring_allowed", False)) and scoring_allowed(data_conf)
+    notes = "; ".join([confidence["confidence_notes"], str(quality.get("quality_notes", ""))]).strip("; ")
     return {
         "evidence_id": _stable_id(canonical, period, value, source_name, source_url, raw_text[:120]),
         "indicator": canonical,
@@ -165,10 +183,10 @@ def _make_evidence_row(
         "parser_confidence": parser_confidence if parser_confidence is not None else 0.5,
         "cross_source_confirmed": bool(cross_source_confirmed),
         "data_confidence": data_conf,
-        "confidence_weight": confidence_weight(data_conf),
-        "scoring_allowed": scoring_allowed(data_conf),
-        "confidence_label": quality_label(data_conf),
-        "confidence_notes": confidence["confidence_notes"],
+        "confidence_weight": confidence_weight(data_conf) if row_scoring_allowed else 0.0,
+        "scoring_allowed": row_scoring_allowed,
+        "confidence_label": quality_label(data_conf) if row_scoring_allowed else "commentary-only",
+        "confidence_notes": notes,
         "raw_text": raw_text[:2500],
     }
 

@@ -20,8 +20,12 @@ def validate_evidence_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, list[st
             out[col] = "" if col != "data_confidence" else 0
             warnings.append(f"Missing evidence column added with default: {col}")
     out["data_confidence"] = pd.to_numeric(out["data_confidence"], errors="coerce").fillna(0).clip(0, 100)
+    existing_allowed = out.get("scoring_allowed")
     out["confidence_weight"] = out["data_confidence"].apply(confidence_weight)
     out["scoring_allowed"] = out["data_confidence"].apply(scoring_allowed)
+    if existing_allowed is not None:
+        out["scoring_allowed"] = out["scoring_allowed"] & existing_allowed.astype(str).str.lower().isin(["true", "1", "yes"])
+        out.loc[~out["scoring_allowed"], "confidence_weight"] = 0.0
     weak = out[out["data_confidence"] < 40]
     if not weak.empty:
         warnings.append(f"{len(weak)} evidence row(s) below scoring threshold; commentary-only.")
@@ -45,7 +49,10 @@ def validate_groq_macro_score(item: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         data_confidence = 50.0
     data_confidence = max(0.0, min(100.0, data_confidence))
-    weight = confidence_weight(data_confidence)
+    declared_allowed = item.get("scoring_allowed", True)
+    if isinstance(declared_allowed, str):
+        declared_allowed = declared_allowed.lower() in {"true", "1", "yes"}
+    weight = confidence_weight(data_confidence) if bool(declared_allowed) else 0.0
     try:
         effective_score = float(item.get("effective_score", signal_score * weight))
     except Exception:

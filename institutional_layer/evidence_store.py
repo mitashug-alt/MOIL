@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -44,8 +45,18 @@ def _record_group_counts(records: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def build_institutional_evidence_rows(cache: dict[str, Any] | None = None, outstanding_shares: float | None = None) -> pd.DataFrame:
-    """Return canonical institutional evidence rows with quality scores."""
+    """Return canonical institutional evidence rows with strict quality scores.
+
+    Evidence can be displayed even when it is commentary-only. Only rows that
+    are directional, exact enough, material and sufficiently fresh are allowed
+    to affect the Smart Money Score.
+    """
     cache = cache if cache is not None else load_institutional_cache()
+    if outstanding_shares is None:
+        try:
+            outstanding_shares = float(os.getenv("MOIL_OUTSTANDING_SHARES", "") or 0) or None
+        except Exception:
+            outstanding_shares = None
     if not isinstance(cache, dict) or not cache.get("ok", False):
         return pd.DataFrame()
 
@@ -64,7 +75,9 @@ def build_institutional_evidence_rows(cache: dict[str, Any] | None = None, outst
     for obs in cache.get("shareholding_observations", []) or []:
         row = dict(obs)
         row["evidence_type"] = "shareholding_delta"
-        row["event_date"] = row.get("period") or row.get("scraped_at")
+        # Do not use scraped_at as the quarter/event date. If the source did not
+        # expose a quarter, this row is evidence but not scoring-grade.
+        row["event_date"] = row.get("period") or row.get("latest_period")
         row["institution"] = row.get("holder_category")
         row["transaction_type"] = "HOLDING_CHANGE"
         row["quantity"] = None
@@ -92,6 +105,7 @@ def build_institutional_evidence_rows(cache: dict[str, Any] | None = None, outst
         raw_impact = _as_float(row.get("raw_impact")) or 0.0
         effective_impact = raw_impact * float(quality.get("confidence_weight", 0.0)) if quality.get("scoring_allowed") else 0.0
         row.update(quality)
+        row["effective_score"] = round(effective_impact, 4)
         row["effective_impact"] = round(effective_impact, 4)
         row["quality_timestamp"] = utc_now()
         row["evidence_id"] = row.get("observation_id") or _hashable_key(row.get("source_name"), row.get("event_date"), row.get("institution"), row.get("raw_text"))
@@ -101,9 +115,9 @@ def build_institutional_evidence_rows(cache: dict[str, Any] | None = None, outst
     if not df.empty:
         desired = [
             "evidence_id", "evidence_type", "source_name", "source_tier", "event_date", "institution",
-            "transaction_type", "quantity", "price", "value_inr", "pct_equity", "holder_category",
+            "entity_type", "transaction_type", "quantity", "price", "value_inr", "pct_equity", "holder_category",
             "holding_pct", "previous_holding_pct", "delta_pct_points", "raw_impact", "data_confidence",
-            "confidence_weight", "effective_impact", "scoring_allowed", "confidence_bucket", "confidence_notes",
+            "confidence_weight", "effective_score", "effective_impact", "scoring_allowed", "confidence_bucket", "confidence_notes",
             "source_url", "raw_text",
         ]
         for col in desired:
@@ -182,7 +196,7 @@ def build_smart_money_scorecard(cache: dict[str, Any] | None = None) -> pd.DataF
     for _, row in evidence.iterrows():
         raw = _as_float(row.get("raw_impact")) or 0.0
         eff = _as_float(row.get("effective_impact")) or 0.0
-        if raw == 0:
+        if raw == 0 or not bool(row.get("scoring_allowed")) or eff == 0:
             continue
         severity = "Confirmation" if eff >= 0.7 else "Watch" if eff > 0 else "High-Stress" if eff <= -1.2 else "Risk Warning" if eff < -0.4 else "Watch"
         action = str(row.get("transaction_type") or row.get("evidence_type") or "signal")
@@ -194,6 +208,7 @@ def build_smart_money_scorecard(cache: dict[str, Any] | None = None) -> pd.DataF
             "raw_impact": round(raw, 2),
             "data_confidence": row.get("data_confidence"),
             "confidence_weight": row.get("confidence_weight"),
+            "effective_score": round(eff, 2),
             "effective_impact": round(eff, 2),
             "description": f"{inst}: {action}; confidence {row.get('data_confidence')} / 100.",
             "source_name": row.get("source_name"),
