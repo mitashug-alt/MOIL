@@ -1,77 +1,29 @@
-# MOIL Macro Radar
+# MOIL Macro Radar - Groq Regime Intelligence Upgrade
 
-Institutional regime-intelligence dashboard for MOIL Ltd and the Indian manganese/steel ecosystem.
+Streamlit dashboard for MOIL Ltd and the Indian manganese/steel cycle.
 
-This version is positioned as a **predictive regime analysis platform**, not a high-frequency trading bot or automatic buy/sell system.
+## New in this patch
 
-## What this version adds
+- Groq/Llama 3.3 remains the primary AI scorer.
+- Optional automatic macro feed pull using `SERPER_API_KEY` before Groq scoring.
+- Groq no longer depends only on stale manual rows when a search API is configured.
+- NSE institutional sync now tries the official NSE archive CSV first and distinguishes:
+  - endpoint blocked/unavailable
+  - feed loaded but no MOIL bulk/block rows today
+- CSV upload fallback for NSE bulk/block files when Codespaces blocks exchange endpoints.
+- Telegram alerts remain enabled.
 
-- Groq / Llama 3.3 primary AI scoring desk
-- Manual macro scoring fallback
-- Composite 0-100 regime score
-- Signal confidence score
-- Data quality score
-- Volume confirmation layer using relative volume and volume Z-score
-- Correlation engine and rolling MOIL correlation monitor
-- Return and volume anomaly detection
-- Telegram alerting with technical snapshots
-- Institutional/news tracker
-- NSE bulk/block sync placeholder with safe failure handling
-- Validation tab for real-world testing discipline
-- BDRY as default dry-bulk freight proxy
+## Important architecture note
 
-## Files
+Groq/Llama does not browse the web by itself in this app. The dashboard must first fetch data from APIs/web feeds/search snippets, then Groq scores the supplied facts. Automatic physical macro scoring therefore requires either:
 
-```text
-app.py                     Streamlit dashboard
-a macro_radar.py           Core analytics and scoring engine
-groq_macro_scorer.py       Groq/Llama 3.3 scoring and commentary
-telegram_alert.py          Telegram sender
-requirements.txt           Dependencies
-README.md                  Setup and operating guide
-data/manual_macro_template.csv
-data/news_tracker.csv
-.streamlit/secrets.toml.example
-```
-
-## Local setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-Windows PowerShell:
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m streamlit run app.py
-```
-
-## GitHub Codespaces setup
-
-Run:
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py --server.address 0.0.0.0 --server.port 8501
-```
-
-Open the forwarded 8501 port.
+1. a paid/authorized commodity feed such as SteelMint/BigMint/Reuters, or
+2. a web-search API such as Serper, or
+3. NSE/public archive CSVs and uploaded files.
 
 ## Secrets
 
-Copy the example file:
-
-```bash
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-```
-
-Fill locally only:
+Create `.streamlit/secrets.toml` locally or use GitHub Codespaces secrets.
 
 ```toml
 GROQ_API_KEY = ""
@@ -81,109 +33,124 @@ GROQ_PROJECT = "MOIL Macro Radar"
 
 TELEGRAM_BOT_TOKEN = ""
 TELEGRAM_CHAT_ID = ""
+
+# Optional, but required for automatic macro web pull
+SERPER_API_KEY = ""
 ```
 
 Never commit `.streamlit/secrets.toml`.
 
-For Codespaces, use GitHub Codespaces secrets:
+## Run
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py --server.address 0.0.0.0 --server.port 8502
+```
+
+## Recommended workflow
+
+1. Open Market radar and Data quality.
+2. Go to Groq AI desk.
+3. If `SERPER_API_KEY` is configured, click **Pull auto macro feed**.
+4. Click **Run Groq macro scoring**.
+5. Click **Apply Groq scores to regime**.
+6. Go to Institutional sync and click **NSE Sync: Bulk/Block Deals**.
+7. If NSE is blocked, upload NSE CSV through the fallback uploader.
+8. Generate Groq commentary and send Telegram alert.
+
+
+## Source-aware automatic macro feeds
+
+Groq/Llama scores facts supplied by the app; it does not independently browse paid commodity sources. The app therefore uses a feed ladder:
+
+1. Licensed/vendor endpoints configured in Streamlit secrets
+2. SERPER_API_KEY source-targeted web-search fallback
+3. Manual macro table fallback
+
+Preferred source map:
+
+| Indicator | Primary source | Secondary source | Secret endpoint |
+|---|---|---|---|
+| Silico-Manganese Prices | Argus Media | FerroAlloyNet / BigMint manual | ARGUS_SIMN_FEED_URL |
+| India Crude Steel Production | Ministry of Steel / JPC | World Steel Association | JPC_STEEL_FEED_URL |
+| China Steel Exports | GACC | Mysteel / Argus | GACC_STEEL_EXPORTS_FEED_URL |
+| China Power / Industrial Stress | NBS China | Bloomberg / S&P Global Commodity Insights | CHINA_POWER_STRESS_FEED_URL |
+
+Add optional secrets:
+
+```toml
+SERPER_API_KEY = ""
+ARGUS_API_KEY = ""
+ARGUS_SIMN_FEED_URL = ""
+JPC_STEEL_FEED_URL = ""
+GACC_STEEL_EXPORTS_FEED_URL = ""
+CHINA_POWER_STRESS_FEED_URL = ""
+```
+
+These endpoint URLs can be vendor APIs, internal CSV exports, or lightweight proxy services. The app never displays keys.
+
+## Backend scraper + smart money upgrade
+
+This repository can run low-frequency scheduled jobs that write cached JSON for the dashboard:
+
+```bash
+python -m scrapers.run_daily_scrape
+python institutional_tracker.py
+```
+
+Cached outputs:
 
 ```text
-GROQ_API_KEY
-TELEGRAM_BOT_TOKEN
-TELEGRAM_CHAT_ID
+data/cache/latest_macro_data.json
+data/cache/institutional_activity_latest.json
 ```
 
-## Scoring framework
+The Streamlit app reads cached macro rows through `backend_cache_loader.py` and `auto_feeds.py`, so Groq scores supplied facts instead of relying only on stale manual inputs.
 
-The dashboard calculates:
+GitHub Actions workflows:
 
 ```text
-Regime Score:        0-100
-Confidence Score:    0-100
-Data Quality Score:  0-100
+.github/workflows/daily_macro_scrape.yml
+.github/workflows/daily_institutional_tracker.yml
+.github/workflows/manual_scraper_test.yml
 ```
 
-Regime interpretation:
+Use official downloads and permitted public pages first. Do not scrape on every dashboard page load.
 
-| Score | Regime |
-|---:|---|
-| 70-100 | Bullish industrial reflation |
-| 55-69 | Constructive / watch confirmation |
-| 45-54 | Neutral / mixed cycle |
-| 0-44 | Risk-off commodity regime |
+## Data Quality v2 Upgrade
 
-Manual macro scale:
+This build adds a source-governed evidence pipeline. Scheduled scrapers and verified uploads are converted into canonical evidence rows with a 0-100 data confidence score. Groq/Llama 3.3 now returns both a raw `signal_score` and a confidence-adjusted `effective_score`; only the effective score moves the regime model.
 
-| Score | Meaning |
-|---:|---|
-| +2.0 | Strongly bullish |
-| +1.0 | Bullish / constructive |
-| +0.5 | Mildly constructive |
-| 0.0 | Neutral / mixed / unavailable |
-| -0.5 | Mildly negative |
-| -1.0 | Bearish |
-| -2.0 | Severe stress |
+Confidence gates:
 
-## Groq AI scoring
-
-The Groq AI desk reads:
-
-- Manual macro table
-- Market snapshot
-- Regime context
-- News/institutional tracker
-
-It returns structured JSON:
-
-```json
-{
-  "macro_scores": [
-    {
-      "indicator": "Silico-Manganese Prices",
-      "score": -1.0,
-      "status": "bearish",
-      "rationale": "...",
-      "confidence": 0.72,
-      "data_quality": "medium"
-    }
-  ],
-  "overall_manual_macro_score": 0.25,
-  "regime_commentary": "...",
-  "watch_items": ["..."],
-  "risks": ["..."]
-}
+```text
+>=80     full score impact
+60-79    70% score impact
+40-59    40% score impact
+<40      commentary-only / no regime impact
 ```
 
-If Groq is missing or fails, the dashboard continues using manual macro scores and rule-based commentary.
+New files:
 
-## Telegram
+```text
+data_layer/source_registry.yaml
+data_layer/confidence_engine.py
+data_layer/evidence_store.py
+data_layer/validators.py
+schemas/evidence_row.schema.json
+DATA_QUALITY_V2.md
+```
 
-Telegram is optional. The alert includes:
+New app surfaces:
 
-- Regime score
-- Confidence and data quality
-- MOIL technical levels
-- Support/resistance
-- 50DMA / 200DMA
-- Top positives and pressures
-- Manual macro scores
-- Anomaly flags
-- Optional Groq desk commentary
+```text
+Groq AI desk -> Source readiness v2
+Manual macro tracker -> Verified evidence CSV/JSON upload
+Data quality -> Data Quality Command Center + Evidence Viewer
+```
 
-## Model-risk controls
+## Institutional Quality v2
 
-This version directly addresses investor feedback:
+The smart-money tracker now converts NSE/Trendlyne/Screener/MOIL shareholding outputs into canonical institutional evidence rows. Each row receives a confidence score and a confidence-adjusted smart-money impact. Low-confidence or low-materiality rows are used for commentary only and do not move the regime score.
 
-- Not positioned for high-frequency or intraday scalping
-- Adds volume confirmation
-- Adds data quality scoring
-- Adds confidence scoring
-- Adds validation tab
-- Keeps model transparent and auditable
-- Makes stock-specific modeling a feature, not a weakness
-
-## Notes
-
-- This is a research dashboard, not investment advice.
-- yfinance symbols can occasionally fail or be delayed.
-- Paid data connectors such as Reuters, SteelMint, NSE licensed feeds or broker feeds should be connected only through approved/licensed APIs.
+See `INSTITUTIONAL_QUALITY_V2.md` for details.

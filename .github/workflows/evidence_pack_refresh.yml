@@ -1,0 +1,32 @@
+name: Build MOIL Evidence Pack
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "45 4 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  evidence-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build evidence pack from scheduled cache
+        run: |
+          python -m backend_cache_loader
+      - name: Commit evidence pack
+        run: |
+          git config user.name "moil-evidence-bot"
+          git config user.email "moil-evidence-bot@users.noreply.github.com"
+          git add data/cache/evidence_pack_latest.json
+          git commit -m "Update confidence-scored evidence pack" || echo "No evidence changes"
+          git push

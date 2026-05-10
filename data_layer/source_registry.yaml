@@ -1,0 +1,76 @@
+# Human-readable source governance registry for MOIL Macro Radar.
+# The code keeps a Python fallback copy so the app does not require PyYAML.
+indicators:
+  Silico-Manganese Prices:
+    priority: 1
+    accepted_sources:
+      - Argus Media
+      - FerroAlloyNet
+      - BigMint
+      - SteelMint
+      - OfBusiness
+    preferred_exact_fields:
+      - grade
+      - region
+      - price
+      - unit
+      - period
+    scoring_policy: confidence_adjusted
+    commentary_only_below_confidence: 40
+  India Crude Steel Production:
+    priority: 2
+    accepted_sources:
+      - Ministry of Steel / JPC
+      - JPC
+      - World Steel Association
+      - worldsteel
+    preferred_exact_fields:
+      - period
+      - production_tonnage
+      - unit
+      - yoy_change
+    scoring_policy: confidence_adjusted
+    commentary_only_below_confidence: 40
+  China Steel Exports:
+    priority: 3
+    accepted_sources:
+      - GACC
+      - China Customs
+      - China Data Portal
+      - Mysteel
+      - Argus Media
+    preferred_exact_fields:
+      - period
+      - volume
+      - unit
+      - yoy_change
+    scoring_policy: confidence_adjusted
+    commentary_only_below_confidence: 40
+  China Power / Industrial Stress:
+    priority: 4
+    accepted_sources:
+      - NBS China
+      - National Bureau of Statistics of China
+      - S&P Global Commodity Insights
+      - Bloomberg
+    preferred_exact_fields:
+      - period
+      - industrial_output
+      - electricity_generation
+      - yoy_change
+    scoring_policy: confidence_adjusted
+    commentary_only_below_confidence: 40
+  MOIL Ore / EMD Price Circular:
+    priority: 5
+    accepted_sources:
+      - MOIL Ltd
+      - MOIL PDF circular
+      - NSE/BSE filing
+    preferred_exact_fields:
+      - effective_date
+      - product_family
+      - ore_code
+      - price
+      - unit
+    scoring_policy: evidence_only_no_direct_score_without_groq
+    commentary_only_below_confidence: 40

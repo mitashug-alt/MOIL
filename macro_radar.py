@@ -391,18 +391,54 @@ def detect_anomalies(
 
 
 def normalize_manual_macro(df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source"]
+    """Normalize physical macro rows while preserving Data Quality v2 metadata.
+
+    Legacy columns are required by the UI. Extended columns allow confidence-
+    adjusted scoring from scheduled/cache evidence packs.
+    """
+    base_columns = ["date", "indicator", "value", "unit", "status", "score", "commentary", "source"]
+    quality_columns = [
+        "best_source",
+        "source_tier",
+        "source_type",
+        "exact_data",
+        "latest_period",
+        "data_confidence",
+        "confidence_weight",
+        "scoring_allowed",
+        "confidence_label",
+        "confidence_notes",
+        "evidence_count",
+        "raw_evidence",
+    ]
+    columns = base_columns + quality_columns
     if df is None or df.empty:
         return pd.DataFrame(columns=columns)
     out = df.copy()
-    for col in columns:
+    for col in base_columns:
         if col not in out.columns:
             out[col] = "" if col != "score" else 0.0
+    for col in quality_columns:
+        if col not in out.columns:
+            if col in {"data_confidence"}:
+                out[col] = np.nan
+            elif col in {"confidence_weight"}:
+                out[col] = np.nan
+            elif col in {"source_tier", "evidence_count"}:
+                out[col] = np.nan
+            elif col in {"scoring_allowed", "exact_data"}:
+                out[col] = False
+            else:
+                out[col] = ""
     out = out[columns]
     out["date"] = out["date"].astype(str).str.strip()
     out["indicator"] = out["indicator"].astype(str).str.strip()
     out["status"] = out["status"].astype(str).str.strip().replace("", "neutral")
     out["score"] = pd.to_numeric(out["score"], errors="coerce").fillna(0.0).clip(-2, 2)
+    out["data_confidence"] = pd.to_numeric(out["data_confidence"], errors="coerce")
+    out["confidence_weight"] = pd.to_numeric(out["confidence_weight"], errors="coerce")
+    out["source_tier"] = pd.to_numeric(out["source_tier"], errors="coerce")
+    out["evidence_count"] = pd.to_numeric(out["evidence_count"], errors="coerce")
     return out
 
 
@@ -506,43 +542,139 @@ def _component_score_from_distance(dist: Optional[float], strong: float = 0.08, 
     return 0.0, f"near trend by {dist:.1%}", 0.60
 
 
+def _confidence_weight_from_row(row: pd.Series) -> float:
+    """Confidence gates for physical macro rows.
+
+    >=80 full impact, 60-79 70%, 40-59 40%, below 40 commentary-only.
+    """
+    try:
+        if pd.notna(row.get("confidence_weight", np.nan)):
+            return float(np.clip(row.get("confidence_weight"), 0, 1))
+    except Exception:
+        pass
+    try:
+        c = float(row.get("data_confidence", np.nan))
+    except Exception:
+        c = np.nan
+    if pd.isna(c):
+        source = str(row.get("source", "")).lower()
+        if any(x in source for x in ["argus", "jpc", "gacc", "nbs", "worldsteel", "moil pdf", "official"]):
+            c = 80
+        elif any(x in source for x in ["bigmint", "steelmint", "ofbusiness", "mysteel"]):
+            c = 55
+        else:
+            c = 60 if str(row.get("source", "")).strip() and "manual" not in source else 50
+    if c >= 80:
+        return 1.0
+    if c >= 60:
+        return 0.70
+    if c >= 40:
+        return 0.40
+    return 0.0
+
+
 def _manual_source_scores(manual_macro: pd.DataFrame, groq_scores: Optional[dict]) -> pd.DataFrame:
+    """Resolve manual/cache/Groq scores with confidence-adjusted impact."""
     manual = normalize_manual_macro(manual_macro)
+
+    def apply_manual_defaults(df: pd.DataFrame) -> pd.DataFrame:
+        raw_scores = []
+        effective_scores = []
+        confidences = []
+        sources = []
+        rationales = []
+        for _, row in df.iterrows():
+            raw = float(np.clip(pd.to_numeric(row.get("score", 0), errors="coerce"), -2, 2))
+            weight = _confidence_weight_from_row(row)
+            data_conf = row.get("data_confidence", np.nan)
+            try:
+                data_conf = float(data_conf)
+            except Exception:
+                data_conf = weight * 100
+            if pd.isna(data_conf):
+                data_conf = weight * 100
+            raw_scores.append(raw)
+            effective_scores.append(raw * weight)
+            confidences.append(float(np.clip(data_conf / 100.0, 0, 1)))
+            sources.append(str(row.get("source", "Manual")))
+            rationale = str(row.get("commentary", ""))
+            rationale += f" | Data confidence {data_conf:.0f}/100; confidence weight {weight:.2f}."
+            if weight == 0:
+                rationale += " Commentary-only: below scoring threshold."
+            rationales.append(rationale)
+        df["applied_raw_score"] = raw_scores
+        df["applied_score"] = effective_scores
+        df["applied_effective_score"] = effective_scores
+        df["applied_confidence"] = confidences
+        df["applied_source"] = sources
+        df["applied_rationale"] = rationales
+        return df
+
     if not groq_scores or not isinstance(groq_scores, dict) or not groq_scores.get("macro_scores"):
-        manual["applied_score"] = manual["score"]
-        manual["applied_confidence"] = 0.65
-        manual["applied_source"] = manual.get("source", "Manual")
-        manual["applied_rationale"] = manual.get("commentary", "")
-        return manual
+        return apply_manual_defaults(manual)
 
     ai_rows = pd.DataFrame(groq_scores.get("macro_scores", []))
     if ai_rows.empty or "indicator" not in ai_rows.columns:
-        manual["applied_score"] = manual["score"]
-        manual["applied_confidence"] = 0.65
-        manual["applied_source"] = manual.get("source", "Manual")
-        manual["applied_rationale"] = manual.get("commentary", "")
-        return manual
+        return apply_manual_defaults(manual)
 
     ai_rows["indicator_key"] = ai_rows["indicator"].astype(str).str.strip().str.lower()
     ai_map = ai_rows.set_index("indicator_key").to_dict("index")
-    applied_scores = []
+    applied_raw = []
+    applied_effective = []
     applied_conf = []
     applied_source = []
     applied_rationale = []
     for _, row in manual.iterrows():
         key = str(row["indicator"]).strip().lower()
         ai = ai_map.get(key)
+        base_weight = _confidence_weight_from_row(row)
         if ai:
-            applied_scores.append(float(np.clip(pd.to_numeric(ai.get("score", 0), errors="coerce"), -2, 2)))
-            applied_conf.append(float(np.clip(pd.to_numeric(ai.get("confidence", 0.65), errors="coerce"), 0, 1)))
-            applied_source.append("Groq/Llama 3.3")
-            applied_rationale.append(str(ai.get("rationale", row.get("commentary", ""))))
+            raw = float(np.clip(pd.to_numeric(ai.get("signal_score", ai.get("score", 0)), errors="coerce"), -2, 2))
+            data_conf = ai.get("data_confidence", row.get("data_confidence", np.nan))
+            try:
+                data_conf = float(data_conf)
+            except Exception:
+                data_conf = float(ai.get("confidence", 0.65)) * 100
+            if pd.isna(data_conf):
+                data_conf = float(ai.get("confidence", 0.65)) * 100
+            if data_conf >= 80:
+                gate = 1.0
+            elif data_conf >= 60:
+                gate = 0.70
+            elif data_conf >= 40:
+                gate = 0.40
+            else:
+                gate = 0.0
+            effective = ai.get("effective_score", raw * gate)
+            try:
+                effective = float(effective)
+            except Exception:
+                effective = raw * gate
+            applied_raw.append(raw)
+            applied_effective.append(float(np.clip(effective, -2, 2)))
+            applied_conf.append(float(np.clip(data_conf / 100.0, 0, 1)))
+            applied_source.append("Groq/Llama 3.3 evidence scoring")
+            rationale = str(ai.get("rationale", row.get("commentary", "")))
+            rationale += f" | Raw signal {raw:+.2f}; effective signal {float(np.clip(effective, -2, 2)):+.2f}; data confidence {data_conf:.0f}/100."
+            if gate == 0:
+                rationale += " Commentary-only: below scoring threshold."
+            applied_rationale.append(rationale)
         else:
-            applied_scores.append(float(row["score"]))
-            applied_conf.append(0.65)
+            raw = float(row.get("score", 0))
+            effective = raw * base_weight
+            data_conf = row.get("data_confidence", base_weight * 100)
+            try:
+                data_conf = float(data_conf)
+            except Exception:
+                data_conf = base_weight * 100
+            applied_raw.append(raw)
+            applied_effective.append(effective)
+            applied_conf.append(float(np.clip(data_conf / 100.0, 0, 1)))
             applied_source.append(str(row.get("source", "Manual")))
-            applied_rationale.append(str(row.get("commentary", "")))
-    manual["applied_score"] = applied_scores
+            applied_rationale.append(str(row.get("commentary", "")) + f" | No Groq row; confidence weight {base_weight:.2f}.")
+    manual["applied_raw_score"] = applied_raw
+    manual["applied_score"] = applied_effective
+    manual["applied_effective_score"] = applied_effective
     manual["applied_confidence"] = applied_conf
     manual["applied_source"] = applied_source
     manual["applied_rationale"] = applied_rationale
@@ -580,35 +712,44 @@ def compute_data_quality(
 
     manual = normalize_manual_macro(manual_macro)
     for _, row in manual.iterrows():
-        score = 70.0
         details = []
-        date_text = str(row.get("date", "")).strip()
-        if date_text:
-            parsed = pd.to_datetime(date_text, errors="coerce")
-            if pd.notna(parsed):
-                age_days = int(max((today - parsed.normalize()).days, 0))
-                if age_days <= 7:
-                    score = 90.0
-                elif age_days <= 30:
-                    score = 70.0
-                else:
-                    score = 45.0
-                details.append(f"age={age_days}d")
-            else:
-                score = 55.0
-                details.append("date parse warning")
+        data_conf = pd.to_numeric(row.get("data_confidence", np.nan), errors="coerce")
+        if pd.notna(data_conf):
+            score = float(np.clip(data_conf, 0, 100))
+            details.append(f"data_confidence={score:.0f}/100")
+            if str(row.get("confidence_notes", "")).strip():
+                details.append(str(row.get("confidence_notes", ""))[:180])
         else:
-            score = 50.0
-            details.append("missing date")
-        if not str(row.get("value", "")).strip():
-            score = min(score, 45.0)
-            details.append("missing value")
+            score = 70.0
+            date_text = str(row.get("date", "")).strip()
+            if date_text:
+                parsed = pd.to_datetime(date_text, errors="coerce")
+                if pd.notna(parsed):
+                    age_days = int(max((today - parsed.normalize()).days, 0))
+                    if age_days <= 7:
+                        score = 90.0
+                    elif age_days <= 30:
+                        score = 70.0
+                    else:
+                        score = 45.0
+                    details.append(f"age={age_days}d")
+                else:
+                    score = 55.0
+                    details.append("date parse warning")
+            else:
+                score = 50.0
+                details.append("missing date")
+            if not str(row.get("value", "")).strip():
+                score = min(score, 45.0)
+                details.append("missing value")
+        if not bool(row.get("scoring_allowed", True)) and pd.notna(data_conf):
+            details.append("commentary-only: below scoring threshold")
         rows.append(
             {
                 "source": str(row.get("indicator", "Manual indicator")),
-                "type": "manual macro",
+                "type": "physical macro evidence",
                 "score": score,
-                "status": "ok" if score >= 70 else "watch",
+                "status": "ok" if score >= 70 else "watch" if score >= 40 else "weak",
                 "details": "; ".join(details),
             }
         )
@@ -967,33 +1108,17 @@ def run_market_validation(prices: pd.DataFrame, forward_days: Iterable[int] = (5
 
 
 def fetch_nse_deals(symbol: str = "MOIL") -> pd.DataFrame:
-    """Placeholder-friendly NSE deals fetcher.
+    """Fetch NSE bulk/block deals for a symbol with archive fallback.
 
-    NSE endpoints often require headers/cookies and may block cloud hosts. The
-    app calls this safely; failures return an empty DataFrame rather than
-    breaking the dashboard.
+    Uses the official nsearchives CSV when available. Returns an empty
+    DataFrame when the archive loads but no symbol-level deal exists today,
+    which is different from an endpoint failure. Diagnostics are exposed by
+    auto_feeds.fetch_nse_deals_auto in the UI.
     """
     try:
-        import requests
+        from auto_feeds import fetch_nse_deals_auto
 
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.nseindia.com/",
-        }
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=10)
-        url = "https://www.nseindia.com/api/historical/bulk-deals"
-        response = session.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        payload = response.json()
-        data = payload.get("data", []) if isinstance(payload, dict) else []
-        df = pd.DataFrame(data)
-        if df.empty:
-            return df
-        candidates = [c for c in df.columns if str(c).lower() in {"symbol", "sym"}]
-        if candidates:
-            df = df[df[candidates[0]].astype(str).str.upper() == symbol.upper()]
-        return df
+        deals, _diagnostics = fetch_nse_deals_auto(symbol)
+        return deals
     except Exception:
         return pd.DataFrame()

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MOIL Macro Radar Groq Evidence Score",
+  "type": "object",
+  "required": ["macro_scores", "overall_effective_macro_score", "overall_data_confidence"],
+  "properties": {
+    "macro_scores": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["indicator", "signal_score", "data_confidence", "effective_score", "status", "rationale"],
+        "properties": {
+          "indicator": {"type": "string"},
+          "signal_score": {"type": "number", "minimum": -2, "maximum": 2},
+          "data_confidence": {"type": "number", "minimum": 0, "maximum": 100},
+          "effective_score": {"type": "number"},
+          "status": {"type": "string"},
+          "rationale": {"type": "string"},
+          "confidence_note": {"type": "string"}
+        }
+      }
+    },
+    "overall_effective_macro_score": {"type": "number"},
+    "overall_data_confidence": {"type": "number", "minimum": 0, "maximum": 100},
+    "regime_commentary": {"type": "string"},
+    "watch_items": {"type": "array", "items": {"type": "string"}},
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "data_quality_warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

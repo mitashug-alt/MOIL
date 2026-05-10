@@ -125,7 +125,7 @@ def build_macro_scoring_prompt(
     news_tracker_df: Optional[pd.DataFrame] = None,
 ) -> str:
     context = {
-        "manual_macro_inputs": _safe_records(manual_macro_df),
+        "evidence_qualified_macro_inputs": _safe_records(manual_macro_df),
         "market_snapshot": _safe_records(market_snapshot_df, limit=20),
         "news_and_institutional_tracker": _safe_records(news_tracker_df, limit=30),
         "current_regime_context": regime_context or {},
@@ -139,18 +139,39 @@ def build_macro_scoring_prompt(
             "-1.5": "strongly bearish",
             "-2.0": "severe stress",
         },
+        "data_confidence_policy": {
+            ">=80": "full score impact",
+            "60-79": "70 percent score impact",
+            "40-59": "40 percent score impact",
+            "20-39": "commentary-only; effective score must be 0",
+            "<20": "ignore for scoring; effective score must be 0",
+        },
     }
     return f"""
-You are an institutional commodity analyst.
+You are an institutional commodity analyst for MOIL Macro Radar.
 
-Score each macro indicator from -2 to +2 for its impact on MOIL Ltd's manganese and ferroalloy cycle.
-Use only the inputs provided. Do not hallucinate missing data. If data is stale, uncertain or qualitative, reduce confidence and keep the score near zero.
+You must score only the evidence supplied below. Do not browse. Do not hallucinate missing data.
+The app has already attached data-confidence metadata to each evidence pack. Respect it.
+
+For every macro indicator, return:
+- signal_score: raw directional impact from -2 to +2
+- data_confidence: use the supplied data_confidence when available, 0-100
+- confidence_weight: apply the stated gate
+- effective_score: signal_score * confidence_weight
+- status, rationale, data_quality
+
+Rules:
+1. If exact data is unavailable or source is weak, keep signal_score near zero and/or use low effective_score.
+2. If scoring_allowed is false, effective_score must be 0 even if signal_score is directional.
+3. Separate facts from interpretation.
+4. Never produce direct buy/sell advice.
+5. Return valid JSON only.
 
 Pay special attention to:
 - Silico-manganese prices and demand tone
 - India crude steel production / consumption
 - China steel exports and dumping pressure
-- China power or industrial stress
+- China industrial or power stress
 - Brent, USDINR, NIFTY Metal, MOIL trend and volume confirmation
 - Institutional/news tracker where provided
 
@@ -159,11 +180,15 @@ Return valid JSON only with this exact schema:
   "macro_scores": [
     {{
       "indicator": "string",
+      "signal_score": number between -2 and 2,
       "score": number between -2 and 2,
+      "data_confidence": number between 0 and 100,
+      "confidence_weight": number between 0 and 1,
+      "effective_score": number between -2 and 2,
       "status": "bullish|constructive|neutral|watch|bearish|stress",
-      "rationale": "short rationale using only provided facts",
+      "rationale": "short rationale using only provided facts and confidence",
       "confidence": number between 0 and 1,
-      "data_quality": "high|medium|low"
+      "data_quality": "high|medium-high|medium-low|commentary-only|ignore"
     }}
   ],
   "overall_manual_macro_score": number,
@@ -175,6 +200,16 @@ Return valid JSON only with this exact schema:
 Context JSON:
 {json.dumps(context, indent=2, default=str)}
 """.strip()
+
+
+def _confidence_weight(data_confidence: float) -> float:
+    if data_confidence >= 80:
+        return 1.0
+    if data_confidence >= 60:
+        return 0.70
+    if data_confidence >= 40:
+        return 0.40
+    return 0.0
 
 
 def _validate_macro_scores(result: Dict[str, Any], manual_macro_df: pd.DataFrame) -> Dict[str, Any]:
@@ -191,45 +226,81 @@ def _validate_macro_scores(result: Dict[str, Any], manual_macro_df: pd.DataFrame
         if not indicator:
             continue
         try:
-            score = float(item.get("score", 0))
+            signal_score = float(item.get("signal_score", item.get("score", 0)))
         except Exception:
-            score = 0.0
+            signal_score = 0.0
+        signal_score = float(np.clip(signal_score, -2, 2))
         try:
-            confidence = float(item.get("confidence", 0.5))
+            data_confidence = float(item.get("data_confidence", float(item.get("confidence", 0.5)) * 100))
         except Exception:
-            confidence = 0.5
+            data_confidence = 50.0
+        data_confidence = float(np.clip(data_confidence, 0, 100))
+        weight = _confidence_weight(data_confidence)
+        try:
+            provided_weight = float(item.get("confidence_weight", weight))
+            if abs(provided_weight - weight) <= 0.31:
+                weight = provided_weight
+        except Exception:
+            pass
+        weight = float(np.clip(weight, 0, 1))
+        try:
+            effective_score = float(item.get("effective_score", signal_score * weight))
+        except Exception:
+            effective_score = signal_score * weight
+        # Enforce confidence gates. Low-confidence rows cannot move the regime.
+        if data_confidence < 40:
+            effective_score = 0.0
+            weight = 0.0
+        effective_score = float(np.clip(effective_score, -2, 2))
         cleaned.append(
             {
                 "indicator": indicator,
-                "score": float(np.clip(score, -2, 2)),
+                "score": signal_score,
+                "signal_score": signal_score,
+                "data_confidence": data_confidence,
+                "confidence_weight": weight,
+                "effective_score": effective_score,
                 "status": str(item.get("status", "neutral")).strip() or "neutral",
                 "rationale": str(item.get("rationale", "")).strip(),
-                "confidence": float(np.clip(confidence, 0, 1)),
+                "confidence": float(np.clip(data_confidence / 100.0, 0, 1)),
                 "data_quality": str(item.get("data_quality", "medium")).strip() or "medium",
+                "scoring_allowed": bool(weight > 0),
             }
         )
 
-    # Fallback to manual rows if model returned incomplete JSON.
     manual = manual_macro_df.copy() if manual_macro_df is not None else pd.DataFrame()
+    existing = {x["indicator"].lower() for x in cleaned}
     for _, row in manual.iterrows():
         indicator = str(row.get("indicator", "")).strip()
-        if indicator and indicator.lower() not in {x["indicator"].lower() for x in cleaned}:
-            cleaned.append(
-                {
-                    "indicator": indicator,
-                    "score": float(np.clip(pd.to_numeric(row.get("score", 0), errors="coerce"), -2, 2)),
-                    "status": str(row.get("status", "neutral")),
-                    "rationale": str(row.get("commentary", "Manual fallback score.")),
-                    "confidence": 0.55,
-                    "data_quality": "manual fallback",
-                }
-            )
+        if not indicator or indicator.lower() in existing:
+            continue
+        data_conf = pd.to_numeric(row.get("data_confidence", np.nan), errors="coerce")
+        if pd.isna(data_conf):
+            data_conf = 55.0
+        data_conf = float(np.clip(data_conf, 0, 100))
+        weight = _confidence_weight(data_conf)
+        raw = float(np.clip(pd.to_numeric(row.get("score", 0), errors="coerce"), -2, 2))
+        cleaned.append(
+            {
+                "indicator": indicator,
+                "score": raw,
+                "signal_score": raw,
+                "data_confidence": data_conf,
+                "confidence_weight": weight,
+                "effective_score": raw * weight,
+                "status": str(row.get("status", "neutral")),
+                "rationale": str(row.get("commentary", "Fallback row; no Groq score returned.")),
+                "confidence": float(np.clip(data_conf / 100.0, 0, 1)),
+                "data_quality": str(row.get("confidence_label", "manual fallback")),
+                "scoring_allowed": bool(weight > 0),
+            }
+        )
     result["macro_scores"] = cleaned
     if cleaned:
-        result["overall_manual_macro_score"] = float(np.mean([x["score"] for x in cleaned]))
+        result["overall_manual_macro_score"] = float(np.mean([x["effective_score"] for x in cleaned]))
     else:
         result["overall_manual_macro_score"] = 0.0
-    result.setdefault("regime_commentary", "Groq returned validated macro scores.")
+    result.setdefault("regime_commentary", "Groq returned validated confidence-adjusted macro scores.")
     result.setdefault("watch_items", [])
     result.setdefault("risks", [])
     return result

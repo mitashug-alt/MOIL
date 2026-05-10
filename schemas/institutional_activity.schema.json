@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MOIL Smart Money Tracker",
+  "type": "object",
+  "required": ["symbol", "scraped_at", "institutional_deals", "shareholding_observations", "smart_money_signals"],
+  "properties": {
+    "symbol": {"type": "string"},
+    "company_name": {"type": "string"},
+    "scraped_at": {"type": "string"},
+    "source_status": {"type": "object"},
+    "diagnostics": {"type": "array", "items": {"type": "string"}},
+    "institutional_deals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "trade_date": {"type": ["string", "null"]},
+          "client_name": {"type": "string"},
+          "transaction_type": {"type": "string"},
+          "quantity": {"type": ["number", "null"]},
+          "price": {"type": ["number", "null"]},
+          "value_inr": {"type": ["number", "null"]},
+          "deal_type": {"type": "string"},
+          "confidence": {"type": "number"}
+        }
+      }
+    },
+    "shareholding_observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "holder_category": {"type": "string"},
+          "holding_pct": {"type": ["number", "null"]},
+          "previous_holding_pct": {"type": ["number", "null"]},
+          "delta_pct_points": {"type": ["number", "null"]},
+          "confidence": {"type": "number"}
+        }
+      }
+    },
+    "sast_filings": {"type": "array"},
+    "smart_money_signals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "signal_type": {"type": "string"},
+          "severity": {"type": "string"},
+          "institution": {"type": ["string", "null"]},
+          "description": {"type": "string"},
+          "score_impact": {"type": "number"},
+          "evidence": {"type": "array"}
+        }
+      }
+    }
+  }
+}

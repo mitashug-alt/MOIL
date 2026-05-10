@@ -47,6 +47,28 @@ from macro_radar import (
     read_news_tracker_csv,
     run_market_validation,
 )
+from auto_feeds import (
+    fetch_nse_deals_auto,
+    fetch_source_aware_macro_feed,
+    is_any_vendor_feed_configured,
+    is_cached_macro_feed_available,
+    is_serper_configured,
+    nse_deals_to_tracker_updates,
+    source_provider_status,
+)
+from backend_cache_loader import (
+    load_latest_institutional_cache,
+    load_latest_macro_cache,
+    macro_cache_to_evidence_rows,
+    macro_cache_to_source_readiness,
+    institutional_cache_summary,
+    institutional_cache_to_evidence_rows,
+    institutional_cache_to_scorecard,
+    institutional_cache_to_source_readiness,
+    institutional_quality_summary_v2,
+)
+from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from_file
+from data_layer.validators import validate_evidence_dataframe
 from telegram_alert import send_telegram_alert
 
 
@@ -141,6 +163,12 @@ if "groq_scores_applied" not in st.session_state:
     st.session_state.groq_scores_applied = None
 if "groq_commentary" not in st.session_state:
     st.session_state.groq_commentary = None
+if "auto_macro_diagnostics" not in st.session_state:
+    st.session_state.auto_macro_diagnostics = []
+if "nse_sync_diagnostics" not in st.session_state:
+    st.session_state.nse_sync_diagnostics = []
+if "evidence_validation_warnings" not in st.session_state:
+    st.session_state.evidence_validation_warnings = []
 
 # Data load ----------------------------------------------------------------
 st.title("MOIL Macro Radar")
@@ -313,6 +341,27 @@ with tabs[3]:
         st.session_state.manual_macro = normalize_manual_macro(pd.read_csv(uploaded))
         st.success("Uploaded manual macro table applied to current session.")
 
+    evidence_upload = st.file_uploader("Upload verified evidence CSV/JSON", type=["csv", "json"], key="verified_evidence_upload")
+    if evidence_upload is not None:
+        try:
+            suffix = ".json" if evidence_upload.name.lower().endswith(".json") else ".csv"
+            tmp_path = Path("data/cache/_uploaded_verified_evidence" + suffix)
+            tmp_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_bytes(evidence_upload.getvalue())
+            evidence_df = load_evidence_from_file(tmp_path)
+            evidence_df, warnings = validate_evidence_dataframe(evidence_df)
+            st.session_state.evidence_validation_warnings = warnings
+            st.session_state.manual_macro = normalize_manual_macro(evidence_to_macro_rows(evidence_df))
+            st.session_state.groq_scores = None
+            st.session_state.groq_scores_applied = None
+            st.success(f"Verified evidence upload converted into {len(st.session_state.manual_macro)} macro row(s).")
+            if warnings:
+                with st.expander("Evidence validation warnings", expanded=True):
+                    for warning in warnings:
+                        st.write(f"- {warning}")
+        except Exception as exc:
+            st.error(f"Could not parse verified evidence upload: {exc}")
+
     edited_manual = st.data_editor(
         st.session_state.manual_macro,
         use_container_width=True,
@@ -357,24 +406,67 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("Groq / Llama 3.3 AI desk")
     config = get_groq_config()
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    auto_source_ready = is_any_vendor_feed_configured() or is_serper_configured() or is_cached_macro_feed_available()
     c1.metric("Groq configured", "Yes" if is_groq_configured() else "No")
-    c2.metric("Model", config["model"])
-    c3.metric("Key name", config["key_name"])
-    c4.metric("Project", config["project"])
-    st.caption("The API key is never displayed. Configure GROQ_API_KEY in Streamlit secrets, GitHub Codespaces secrets, or environment variables.")
+    c2.metric("Auto source pull", "Yes" if auto_source_ready else "No")
+    c3.metric("Model", config["model"])
+    c4.metric("Key name", config["key_name"])
+    c5.metric("Project", config["project"])
+    st.caption("API keys are never displayed. Groq scores supplied facts; source-specific vendor feeds are used first, then SERPER web-search fallback, then manual rows.")
 
     if not is_groq_configured():
         st.warning("Groq is not configured. Manual macro scoring and rule-based commentary remain active.")
+    if not auto_source_ready:
+        st.info("Automatic physical macro pull requires scheduled backend cache output, source-specific vendor feed URLs/API keys, or SERPER_API_KEY. Without them, Groq scores the current manual/news tracker rows only.")
+
+    st.markdown("#### Source readiness v2")
+    readiness_df = source_provider_status()
+    st.dataframe(readiness_df, use_container_width=True, hide_index=True)
+    if not readiness_df.empty:
+        blocked = readiness_df[readiness_df.get("scoring_allowed", False) == False] if "scoring_allowed" in readiness_df.columns else pd.DataFrame()
+        if not blocked.empty:
+            st.caption("Rows below the confidence threshold are commentary-only and do not move the regime score.")
+
+    st.markdown("#### Automatic physical macro feed")
+    st.write("Pull fresh source-aware data for SiMn prices, India steel output, China exports and China power/industrial stress, then let Groq convert the supplied facts/snippets into scores. Paid/vendor endpoints are used first; targeted web search is the fallback.")
+    auto_col1, auto_col2 = st.columns([1, 2])
+    with auto_col1:
+        if st.button("Pull auto macro feed", disabled=not auto_source_ready):
+            with st.spinner("Pulling fresh macro data from configured sources/search fallback..."):
+                auto_macro, diagnostics = fetch_source_aware_macro_feed()
+                st.session_state.auto_macro_diagnostics = diagnostics
+                if not auto_macro.empty:
+                    st.session_state.manual_macro = normalize_manual_macro(auto_macro)
+                    st.session_state.groq_scores = None
+                    st.session_state.groq_scores_applied = None
+                    st.success(f"Auto macro feed applied to current session: {len(auto_macro)} rows.")
+                    st.rerun()
+                else:
+                    st.warning("No automatic macro rows were returned. Check SERPER_API_KEY and diagnostics.")
+    with auto_col2:
+        if st.session_state.auto_macro_diagnostics:
+            with st.expander("Auto macro feed diagnostics", expanded=False):
+                for item in st.session_state.auto_macro_diagnostics:
+                    st.write(f"- {item}")
+
     run_col, apply_col, clear_col = st.columns(3)
     with run_col:
         if st.button("Run Groq macro scoring", disabled=not (enable_groq_scoring and is_groq_configured())):
             with st.spinner("Groq/Llama 3.3 is scoring macro indicators..."):
+                source_readiness_records = source_provider_status().to_dict(orient="records")
                 regime_context = {
                     "label": summary.label,
                     "normalized_score": summary.normalized_score,
                     "confidence_score": summary.confidence_score,
                     "data_quality_score": summary.data_quality_score,
+                    "source_readiness": source_readiness_records,
+                    "confidence_policy": {
+                        ">=80": "full score impact",
+                        "60-79": "70% score impact",
+                        "40-59": "40% score impact",
+                        "<40": "commentary only; no regime impact",
+                    },
                 }
                 result = score_macro_with_groq(st.session_state.manual_macro, snapshot, regime_context, st.session_state.news_tracker)
                 st.session_state.groq_scores = result
@@ -418,31 +510,60 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Institutional & exchange sync")
     st.write("Track qualitative news, fund actions and exchange activity. NSE requests can be blocked by cloud environments, so failures are handled safely.")
+
+    inst_cache = load_latest_institutional_cache()
+    inst_quality = institutional_quality_summary_v2(inst_cache)
+    inst_evidence = institutional_cache_to_evidence_rows(inst_cache)
+    inst_scorecard = institutional_cache_to_scorecard(inst_cache)
+    inst_readiness = institutional_cache_to_source_readiness(inst_cache)
+
+    st.markdown("#### Institutional Quality v2")
+    iq1, iq2, iq3, iq4 = st.columns(4)
+    iq1.metric("Evidence rows", inst_quality.get("evidence_rows", 0))
+    iq2.metric("Scoring rows", inst_quality.get("scoring_rows", 0))
+    iq3.metric("Avg confidence", f"{float(inst_quality.get('average_confidence', 0)):.0f}/100")
+    iq4.metric("Net smart-money impact", f"{float(inst_quality.get('net_effective_impact', 0)):+.2f}")
+    st.caption(f"Institutional tone: {inst_quality.get('institutional_tone', 'n/a')}")
+
+    with st.expander("Institutional source readiness", expanded=False):
+        if inst_readiness is None or inst_readiness.empty:
+            st.info("No institutional source-readiness rows yet. Run python institutional_tracker.py or use manual CSV upload.")
+        else:
+            st.dataframe(inst_readiness, use_container_width=True, hide_index=True)
+
+    with st.expander("Confidence-adjusted smart-money scorecard", expanded=True):
+        if inst_scorecard is None or inst_scorecard.empty:
+            st.info("No confidence-adjusted smart-money signals yet. No material institution-level event has passed quality gates.")
+        else:
+            st.dataframe(inst_scorecard, use_container_width=True, hide_index=True)
+
+    with st.expander("Institutional evidence viewer", expanded=False):
+        if inst_evidence is None or inst_evidence.empty:
+            st.info("No institutional evidence rows found in data/cache/institutional_activity_latest.json.")
+        else:
+            show_cols = [c for c in ["evidence_type", "source_name", "event_date", "institution", "transaction_type", "quantity", "price", "pct_equity", "holder_category", "holding_pct", "delta_pct_points", "data_confidence", "confidence_weight", "effective_impact", "scoring_allowed", "confidence_notes"] if c in inst_evidence.columns]
+            st.dataframe(inst_evidence[show_cols], use_container_width=True, hide_index=True)
+
     n1, n2, n3 = st.columns(3)
     with n1:
         if st.button("NSE Sync: Bulk/Block Deals"):
-            with st.spinner("Fetching NSE deal data..."):
-                deals = fetch_nse_deals("MOIL")
+            with st.spinner("Fetching NSE archive deal data..."):
+                deals, diagnostics = fetch_nse_deals_auto("MOIL")
+                st.session_state.nse_sync_diagnostics = diagnostics
                 if deals is not None and not deals.empty:
-                    updates = []
-                    for _, row in deals.head(10).iterrows():
-                        details = ", ".join(f"{k}: {v}" for k, v in row.to_dict().items() if pd.notna(v))[:500]
-                        updates.append(
-                            {
-                                "date": str(row.get("date", "")),
-                                "category": "Institutional",
-                                "item": str(row.get("clientName", row.get("name", "NSE deal"))),
-                                "value": str(row.get("type", "deal")),
-                                "impact": 1.0 if "BUY" in str(row.get("type", "")).upper() else -1.0 if "SELL" in str(row.get("type", "")).upper() else 0.0,
-                                "confidence": 0.70,
-                                "details": details,
-                                "source": "NSE bulk/block sync",
-                            }
-                        )
-                    st.session_state.news_tracker = pd.concat([pd.DataFrame(updates), st.session_state.news_tracker], ignore_index=True)
+                    updates = nse_deals_to_tracker_updates(deals)
+                    st.session_state.news_tracker = pd.concat([updates, st.session_state.news_tracker], ignore_index=True)
                     st.success(f"Added {len(updates)} NSE tracker rows.")
                 else:
-                    st.info("No MOIL NSE deals returned or endpoint blocked in this environment.")
+                    loaded = any("OK" in str(x) for x in diagnostics)
+                    if loaded:
+                        st.info("NSE archive feed loaded, but no MOIL bulk/block deal row was present in the latest archive.")
+                    else:
+                        st.warning("NSE archive endpoints were blocked or unavailable in this environment. Use the CSV upload fallback below.")
+                if diagnostics:
+                    with st.expander("NSE sync diagnostics", expanded=True):
+                        for item in diagnostics:
+                            st.write(f"- {item}")
     with n2:
         if st.button("Save news tracker"):
             DATA_DIR.mkdir(exist_ok=True)
@@ -452,6 +573,25 @@ with tabs[5]:
         buffer = io.StringIO()
         st.session_state.news_tracker.to_csv(buffer, index=False)
         st.download_button("Download tracker CSV", buffer.getvalue(), file_name="news_tracker.csv", mime="text/csv")
+
+    st.markdown("#### NSE CSV fallback")
+    st.write("If Codespaces blocks NSE, download bulk/block CSV from NSE in your browser and upload it here. The app will filter symbol MOIL and add institutional tracker rows.")
+    nse_upload = st.file_uploader("Upload NSE bulk/block CSV", type=["csv"], key="nse_csv_upload")
+    if nse_upload is not None:
+        try:
+            raw_deals = pd.read_csv(nse_upload)
+            from auto_feeds import _standardize_nse_deal_columns
+            normalized_deals = _standardize_nse_deal_columns(raw_deals, "uploaded")
+            moil_deals = normalized_deals[normalized_deals["symbol"].astype(str).str.upper() == "MOIL"] if not normalized_deals.empty else pd.DataFrame()
+            if not moil_deals.empty:
+                updates = nse_deals_to_tracker_updates(moil_deals)
+                st.session_state.news_tracker = pd.concat([updates, st.session_state.news_tracker], ignore_index=True)
+                st.success(f"Uploaded CSV added {len(updates)} MOIL deal row(s) to tracker.")
+                st.rerun()
+            else:
+                st.info("Uploaded NSE CSV parsed, but no MOIL rows were found.")
+        except Exception as exc:
+            st.error(f"Could not parse uploaded NSE CSV: {exc}")
 
     edited_news = st.data_editor(
         st.session_state.news_tracker,
@@ -488,6 +628,9 @@ with tabs[6]:
                     "anomalies": anomalies.to_dict(orient="records") if not anomalies.empty else [],
                     "technical_levels": technical_levels,
                     "news_tracker": st.session_state.news_tracker.to_dict(orient="records") if not st.session_state.news_tracker.empty else [],
+                    "source_readiness": source_provider_status().to_dict(orient="records"),
+                    "institutional_quality": institutional_quality_summary_v2(load_latest_institutional_cache()),
+                    "institutional_smart_money_scorecard": institutional_cache_to_scorecard(load_latest_institutional_cache()).to_dict(orient="records"),
                 }
                 st.session_state.groq_commentary = generate_groq_commentary(context)
 
@@ -550,7 +693,62 @@ with tabs[7]:
     st.write("Track hit rate, false positives, average 5D/10D/20D forward return, maximum drawdown, data gaps and factor changes monthly.")
 
 with tabs[8]:
-    st.subheader("Data quality")
+    st.subheader("Data Quality Command Center")
+    macro_cache = load_latest_macro_cache()
+    evidence_df = macro_cache_to_evidence_rows(macro_cache)
+    readiness_v2 = macro_cache_to_source_readiness(macro_cache)
+    inst_cache = load_latest_institutional_cache()
+    inst_summary = institutional_cache_summary(inst_cache)
+
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Evidence rows", int(len(evidence_df)) if evidence_df is not None else 0)
+    if readiness_v2 is not None and not readiness_v2.empty:
+        scoring_count = int(readiness_v2["scoring_allowed"].sum()) if "scoring_allowed" in readiness_v2.columns else 0
+        avg_conf = float(pd.to_numeric(readiness_v2.get("confidence", pd.Series(dtype=float)), errors="coerce").fillna(0).mean())
+    else:
+        scoring_count = 0
+        avg_conf = 0.0
+    q2.metric("Scoring-ready indicators", scoring_count)
+    q3.metric("Avg source confidence", f"{avg_conf:.0f}/100")
+    inst_quality_v2 = institutional_quality_summary_v2(inst_cache)
+    q4.metric("Institutional confidence", f"{float(inst_quality_v2.get('average_confidence', 0)):.0f}/100")
+
+    st.markdown("#### Source readiness v2")
+    st.dataframe(readiness_v2, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Evidence viewer")
+    if evidence_df is None or evidence_df.empty:
+        st.info("No cached evidence rows found. Run python -m scrapers.run_daily_scrape.")
+    else:
+        show_cols = [c for c in ["indicator", "source_name", "source_tier", "exact_data", "period", "value", "unit", "data_confidence", "confidence_weight", "scoring_allowed", "confidence_label", "confidence_notes"] if c in evidence_df.columns]
+        st.dataframe(evidence_df[show_cols].sort_values("data_confidence", ascending=False), use_container_width=True, hide_index=True)
+        with st.expander("Raw evidence snippets", expanded=False):
+            selected_indicator = st.selectbox("Evidence indicator", sorted(evidence_df["indicator"].dropna().unique().tolist())) if "indicator" in evidence_df.columns else None
+            if selected_indicator:
+                subset = evidence_df[evidence_df["indicator"] == selected_indicator]
+                for _, row in subset.head(10).iterrows():
+                    st.markdown(f"**{row.get('source_name','source')} — confidence {row.get('data_confidence',0)}/100**")
+                    st.code(str(row.get("raw_text", ""))[:1200])
+
+    st.markdown("#### Institutional Quality v2")
+    inst_evidence_v2 = institutional_cache_to_evidence_rows(inst_cache)
+    inst_readiness_v2 = institutional_cache_to_source_readiness(inst_cache)
+    inst_scorecard_v2 = institutional_cache_to_scorecard(inst_cache)
+    c_inst1, c_inst2, c_inst3 = st.columns(3)
+    c_inst1.metric("Institutional evidence rows", int(len(inst_evidence_v2)) if inst_evidence_v2 is not None else 0)
+    c_inst2.metric("Institutional scoring rows", int(inst_evidence_v2["scoring_allowed"].sum()) if inst_evidence_v2 is not None and not inst_evidence_v2.empty and "scoring_allowed" in inst_evidence_v2.columns else 0)
+    c_inst3.metric("Net institutional impact", f"{float(inst_quality_v2.get('net_effective_impact', 0)):+.2f}")
+    with st.expander("Institutional source readiness v2", expanded=False):
+        st.dataframe(inst_readiness_v2, use_container_width=True, hide_index=True)
+    with st.expander("Institutional evidence and scorecard", expanded=False):
+        if inst_scorecard_v2 is not None and not inst_scorecard_v2.empty:
+            st.markdown("**Confidence-adjusted smart-money scorecard**")
+            st.dataframe(inst_scorecard_v2, use_container_width=True, hide_index=True)
+        if inst_evidence_v2 is not None and not inst_evidence_v2.empty:
+            st.markdown("**Institutional evidence rows**")
+            show_cols = [c for c in ["evidence_type", "source_name", "event_date", "institution", "transaction_type", "quantity", "price", "holder_category", "holding_pct", "delta_pct_points", "data_confidence", "confidence_weight", "effective_impact", "scoring_allowed"] if c in inst_evidence_v2.columns]
+            st.dataframe(inst_evidence_v2[show_cols], use_container_width=True, hide_index=True)
+
     st.markdown("#### Feed quality")
     st.dataframe(data_quality_table, use_container_width=True, hide_index=True)
     st.markdown("#### Ticker map and rows")

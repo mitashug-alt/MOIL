@@ -1,0 +1,41 @@
+name: Daily MOIL Smart Money Tracker
+
+on:
+  schedule:
+    # 18:30 IST = 13:00 UTC, after Indian market close
+    - cron: "0 13 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  smart-money-tracker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run smart money tracker
+        env:
+          MOIL_OUTSTANDING_SHARES: ${{ secrets.MOIL_OUTSTANDING_SHARES }}
+        run: |
+          python institutional_tracker.py
+
+      - name: Commit institutional cache
+        run: |
+          git config user.name "moil-smart-money-bot"
+          git config user.email "moil-smart-money-bot@users.noreply.github.com"
+          git add data/cache/institutional_activity_latest.json data/history/institutional_activity_runs.jsonl || true
+          git commit -m "Update MOIL institutional activity tracker" || echo "No changes to commit"
+          git push
