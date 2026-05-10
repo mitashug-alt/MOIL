@@ -9,3 +9,4 @@ grok upgrade/
 
 data/cache/_uploaded_verified_evidence.csv
 data/cache/_uploaded_verified_evidence.json
+backup_before_groq_upgrade/

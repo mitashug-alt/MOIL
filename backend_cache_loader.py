@@ -21,6 +21,12 @@ from data_layer.evidence_store import (
     evidence_to_macro_rows,
     evidence_to_source_readiness,
 )
+from institutional_layer.evidence_store import (
+    build_institutional_evidence_rows,
+    build_institutional_source_readiness,
+    build_smart_money_scorecard,
+    institutional_quality_summary as _institutional_quality_summary_v2,
+)
 
 CACHE_DIR = Path("data/cache")
 LATEST_MACRO_PATH = CACHE_DIR / "latest_macro_data.json"
@@ -91,3 +97,27 @@ def institutional_cache_summary(cache: dict[str, Any]) -> dict[str, Any]:
         "source_status": cache.get("source_status", {}),
         "diagnostics": cache.get("diagnostics", []),
     }
+
+
+def institutional_cache_to_evidence_rows(cache: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Return Institutional Quality v2 evidence rows from latest cache."""
+    cache = cache if cache is not None else load_latest_institutional_cache()
+    return build_institutional_evidence_rows(cache)
+
+
+def institutional_cache_to_source_readiness(cache: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Return Institutional Quality v2 source-readiness table."""
+    cache = cache if cache is not None else load_latest_institutional_cache()
+    return build_institutional_source_readiness(cache)
+
+
+def institutional_cache_to_scorecard(cache: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Return confidence-adjusted smart-money scorecard."""
+    cache = cache if cache is not None else load_latest_institutional_cache()
+    return build_smart_money_scorecard(cache)
+
+
+def institutional_quality_summary_v2(cache: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return Institutional Quality v2 summary cards."""
+    cache = cache if cache is not None else load_latest_institutional_cache()
+    return _institutional_quality_summary_v2(cache)
