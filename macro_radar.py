@@ -378,6 +378,11 @@ def compute_rolling_correlations(prices: pd.DataFrame, peers: Iterable[str], win
     return out
 
 
+# Backwards-compatible alias for legacy callers
+def moil_correlation_table(corr: pd.DataFrame) -> pd.DataFrame:
+    return compute_moil_correlation_ranking(corr) if isinstance(corr, pd.DataFrame) else pd.DataFrame()
+
+
 def detect_anomalies(
     prices: pd.DataFrame,
     volumes: Optional[pd.DataFrame] = None,
@@ -416,6 +421,17 @@ def detect_anomalies(
             }
         )
     return pd.DataFrame(rows).sort_values(["flag", "z_score"], ascending=[False, False])
+
+
+# Backwards-compatible alias for legacy callers
+def detect_return_anomalies(prices: pd.DataFrame, window: int = 60, threshold: float = 2.5) -> pd.DataFrame:
+    """Detect price-return anomalies (alias to detect_anomalies without volumes).
+
+    Kept to avoid breaking older smoke tests and scripts that expect the prior
+    name. Uses the same z-score-based logic as detect_anomalies.
+    """
+
+    return detect_anomalies(prices, volumes=None, window=window, threshold=threshold)
 
 
 def normalize_manual_macro(df: Optional[pd.DataFrame]) -> pd.DataFrame:

@@ -25,12 +25,11 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
 
 
 def volume_ratio_ok(df: pd.DataFrame, i: int, lookback: int, thresh: float) -> tuple[bool, float, float]:
-    if i < lookback:
-        return False, df.iloc[i]["volume"], float("nan")
-    window = df.iloc[i - lookback : i]
-    avg_vol = window["volume"].mean()
+    start = max(0, i - lookback)
+    window = df.iloc[start:i]
+    avg_vol = window["volume"].mean() if not window.empty else float("nan")
     cur_vol = df.iloc[i]["volume"]
-    ratio = cur_vol / avg_vol if avg_vol > 0 else 0
+    ratio = cur_vol / avg_vol if avg_vol and avg_vol == avg_vol and avg_vol > 0 else 0
     return ratio >= thresh, cur_vol, avg_vol
 
 

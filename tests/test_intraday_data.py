@@ -30,7 +30,8 @@ def test_vwap_resets_daily():
     )
     vwap = compute_vwap(df)
     assert vwap.iloc[1] > vwap.iloc[0]
-    assert vwap.iloc[2] < vwap.iloc[1]  # reset next day
+    # reset next day: first bar of new session equals its own typical price
+    assert vwap.iloc[2] == (df.loc[2, ["high", "low", "close"]].sum() / 3)
 
 
 def test_opening_range_window():

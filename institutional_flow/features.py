@@ -72,7 +72,10 @@ def shareholding_features(shareholding: pd.DataFrame, cfg: TrackerConfig) -> pd.
     def pct_for(cat: str) -> float:
         sub = df[(df["quarter_end"] == latest_q) & (df["category"].str.contains(cat, case=False, na=False))]
         return float(sub["percentage"].sum()) if not sub.empty else 0.0
-    named_count = len(df[(df["quarter_end"] == latest_q) & (df["shares"] >= cfg.named_holder_threshold_shares)])
+    named_mask = (df["quarter_end"] == latest_q) & (df["shares"] >= cfg.named_holder_threshold_shares)
+    if "holder_name" in df.columns:
+        named_mask &= ~df["holder_name"].astype(str).str.lower().str.contains("total", na=False)
+    named_count = len(df[named_mask])
     row = {
         "quarter_end": latest_q,
         "symbol": cfg.symbol,

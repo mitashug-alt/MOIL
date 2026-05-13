@@ -108,10 +108,14 @@ class NSEClient:
         df = df.copy()
         for col in df.columns:
             if str(col).upper() == "SYMBOL" or "SYMBOL" in str(col).upper():
-                return df[df[col].astype(str).str.upper() == sym]
+                filtered = df[df[col].astype(str).str.upper() == sym]
+                if not filtered.empty:
+                    return filtered
         if "security_name" in df.columns:
             mask = df["security_name"].astype(str).str.upper().str.contains(sym, na=False)
-            return df[mask]
+            filtered = df[mask]
+            if not filtered.empty:
+                return filtered
         return df
 
     def _standardize_deals(self, df: pd.DataFrame, deal_type: str) -> pd.DataFrame:

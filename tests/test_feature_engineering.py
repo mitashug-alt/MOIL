@@ -69,7 +69,7 @@ def sample_disclosures():
 def test_deal_features_bulk_threshold():
     cfg = tracker_config()
     feats = deal_features(sample_deals(), cfg)
-    assert feats.loc[0, "moil_bulk_threshold_hit"] is True
+    assert bool(feats.loc[0, "moil_bulk_threshold_hit"]) is True
     assert feats.loc[0, "bulk_net_qty"] == 900_000
 
 
@@ -89,7 +89,7 @@ def test_mf_features():
 def test_disclosure_features():
     cfg = tracker_config()
     feats = disclosures_features(sample_disclosures(), cfg)
-    assert feats.loc[0, "sast_event_flag"] is True
+    assert bool(feats.loc[0, "sast_event_flag"]) is True
     assert feats.loc[0, "value_disclosed_in_events"] == 100_000_000
 
 
