@@ -34,6 +34,7 @@ from macro_radar import (
     compute_regime_score,
     compute_rolling_correlations,
     compute_technical_levels,
+    RegimeSummary,
     correlation_matrix,
     detect_anomalies,
     fetch_market_data,
@@ -226,6 +227,17 @@ def format_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def ensure_regime_summary(obj) -> RegimeSummary:
+    if isinstance(obj, RegimeSummary):
+        return obj
+    if isinstance(obj, dict):
+        try:
+            return RegimeSummary(**obj)
+        except Exception:
+            pass
+    return RegimeSummary(0.0, 1.0, -1.0, 50.0, "Neutral / mixed cycle", "Unknown", "Watch", 0.0, 0.0, "n/a")
+
+
 def reset_market_cache():
     cached_market_data.clear()
 
@@ -298,6 +310,7 @@ scorecard, summary = compute_regime_score(
     volumes=volumes,
     data_quality_score=data_quality_score,
 )
+summary = ensure_regime_summary(summary)
 corr = correlation_matrix(prices, lookback=correlation_lookback)
 moil_corr = compute_moil_correlation_ranking(prices, lookback=correlation_lookback)
 rolling_corrs = compute_rolling_correlations(
