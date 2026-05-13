@@ -1,0 +1,2 @@
+event_date,disclosure_type,entity_name,symbol,acquisition_or_disposal,shares,percentage,value_inr,trigger_type,source_url,notes
+2026-05-10,SAST,Investor X,MOIL,BUY,5000000,2.46,100000000,SAST_2_PERCENT_CHANGE,,

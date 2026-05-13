@@ -67,6 +67,15 @@ from backend_cache_loader import (
     institutional_cache_to_source_readiness,
     institutional_quality_summary_v2,
 )
+from institutional_flow.config import tracker_config
+from institutional_flow.features import combine_features
+from institutional_flow.disclosures import classify_trigger
+from institutional_flow.mf_holdings import load_mf_manual_file
+from institutional_flow.moil_shp import load_manual_shp_csv
+from intraday_vwap_orb.config import StrategyConfig
+from intraday_vwap_orb.data import load_intraday, prepare_intraday
+from intraday_vwap_orb.backtest import run_backtest
+from intraday_vwap_orb.features import daily_features, merge_with_institutional
 from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from_file
 from data_layer.validators import validate_evidence_dataframe
 from telegram_alert import send_telegram_alert
@@ -77,6 +86,35 @@ st.set_page_config(
     page_icon="⛏️",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+# Modern UI theming (trading-desk inspired)
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Space Grotesk', sans-serif; }
+    .stApp { background: radial-gradient(circle at 10% 10%, #0b1220 0, #0a0f1a 40%, #080c15 100%); color: #e5e7eb; }
+    .block-container { padding-top: 1.25rem; padding-bottom: 1.75rem; }
+    /* Cards / metrics */
+    .css-1v3fvcr, .stMetric, .stDataFrame, .stPlotlyChart, .stTable { background: #0f172a; border-radius: 12px; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.04); box-shadow: 0 12px 28px rgba(0,0,0,0.35); }
+    /* Tabs */
+    .stTabs [data-baseweb="tab"] { color: #cbd5f5; font-weight: 600; background: transparent; border: none; }
+    .stTabs [data-baseweb="tab"] [data-testid="stMarkdownContainer"] p { margin: 0; }
+    .stTabs [aria-selected="true"] { color: #ffffff; border-bottom: 3px solid #38bdf8; }
+    /* Buttons */
+    .stButton>button { background: linear-gradient(90deg, #2563eb, #0ea5e9); color: #fff; border: none; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 600; box-shadow: 0 10px 24px rgba(37,99,235,0.35); }
+    .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 14px 28px rgba(14,165,233,0.35); }
+    /* Tables */
+    .stDataFrame thead tr th { background: #0b1629 !important; color: #cbd5f5 !important; }
+    .stDataFrame tbody tr { background: #0f172a; }
+    /* Inputs */
+    .stTextInput>div>div>input, .stSelectbox [data-baseweb="select"]>div { background: #0f172a; color: #e5e7eb; border: 1px solid rgba(255,255,255,0.06); }
+    /* Markdown tweaks */
+    h1, h2, h3, h4, h5, h6 { color: #f8fafc; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 DATA_DIR = Path("data")
@@ -90,6 +128,14 @@ def cached_market_data(ticker_items: Tuple[Tuple[str, str], ...], period: str, i
     if demo:
         return generate_demo_market_data(tickers.keys()), {}
     return fetch_market_data(tickers, period=period, interval=interval)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_intraday_data(ticker_items: Tuple[Tuple[str, str], ...], demo: bool):
+    tickers = dict(ticker_items)
+    if demo:
+        return generate_demo_market_data(tickers.keys(), periods=240), {}
+    return fetch_market_data(tickers, period="5d", interval="5m")
 
 
 def pct_fmt(value) -> str:
@@ -108,6 +154,62 @@ def num_fmt(value, digits: int = 2) -> str:
         return f"{float(value):,.{digits}f}"
     except Exception:
         return str(value)
+
+
+def build_institutional_features(prefer_live: bool = True) -> tuple[pd.DataFrame, list[str]]:
+    """Build institutional features, preferring live NSE deals when available."""
+    cfg = tracker_config({"enable_network": prefer_live})
+    sample_dir = Path("data/sample")
+    diagnostics: list[str] = []
+
+    # Deals: try live NSE first, then sample fallback
+    deals = pd.DataFrame()
+    if prefer_live:
+        try:
+            deals, diag_live = fetch_nse_deals_auto(cfg.symbol)
+            diagnostics.extend(diag_live)
+            if deals is None:
+                deals = pd.DataFrame()
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(f"Live NSE fetch failed: {exc}")
+    if deals.empty:
+        deals_path = sample_dir / "sample_deals.csv"
+        deals = pd.read_csv(deals_path) if deals_path.exists() else pd.DataFrame()
+        diagnostics.append(f"Deals fallback rows: {len(deals)} from {deals_path}" if not deals.empty else "Deals sample missing or empty")
+
+    # Shareholding (manual CSV template)
+    shp_path = sample_dir / "manual_shp_template.csv"
+    shp = load_manual_shp_csv(shp_path) if shp_path.exists() else pd.DataFrame()
+    diagnostics.append(f"SHP rows: {len(shp)} from {shp_path}" if not shp.empty else "SHP sample missing or empty")
+
+    # Mutual funds (manual CSV/XLSX)
+    mf_path = sample_dir / "sample_mf.csv"
+    mf = load_mf_manual_file(mf_path) if mf_path.exists() else pd.DataFrame()
+    diagnostics.append(f"MF rows: {len(mf)} from {mf_path}" if not mf.empty else "MF sample missing or empty")
+
+    # Disclosures (manual CSV)
+    disc_path = sample_dir / "sample_disclosures.csv"
+    disclosures = pd.read_csv(disc_path) if disc_path.exists() else pd.DataFrame()
+    if not disclosures.empty and "trigger_type" not in disclosures.columns:
+        disclosures["trigger_type"] = disclosures.apply(lambda r: classify_trigger(r, cfg.outstanding_shares), axis=1)
+    diagnostics.append(f"Disclosure rows: {len(disclosures)} from {disc_path}" if not disclosures.empty else "Disclosure sample missing or empty")
+
+    features = combine_features(deals, shp, mf, disclosures, cfg)
+    reports_dir = Path("reports")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    if not features.empty:
+        features.to_csv(reports_dir / "moil_institutional_features.csv", index=False)
+    summary = reports_dir / "moil_institutional_flow_summary.md"
+    summary.write_text(
+        "\n".join(
+            [
+                "# MOIL Institutional Flow (auto/manual blend)",
+                f"Deals rows: {len(deals)}; SHP rows: {len(shp)}; MF rows: {len(mf)}; Disclosure rows: {len(disclosures)}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return features, diagnostics
 
 
 def format_snapshot(snapshot: pd.DataFrame) -> pd.DataFrame:
@@ -274,6 +376,114 @@ with tabs[0]:
                 )
                 candle.update_layout(title="MOIL candlestick structure", xaxis_rangeslider_visible=False, yaxis_title="Price")
                 st.plotly_chart(candle, use_container_width=True)
+
+        st.markdown("#### Intraday (5m) MOIL")
+        intraday_data, intraday_err = cached_intraday_data(tuple(DEFAULT_MARKET_TICKERS.items()), demo=demo_mode)
+        if intraday_err:
+            st.caption("; ".join(f"{k}: {v}" for k, v in intraday_err.items()))
+        if intraday_data.get("MOIL") is not None and not intraday_data["MOIL"].empty:
+            intraday_df = intraday_data["MOIL"].tail(200)
+            intraday_fig = go.Figure(
+                go.Candlestick(
+                    x=intraday_df.index,
+                    open=intraday_df["Open"],
+                    high=intraday_df["High"],
+                    low=intraday_df["Low"],
+                    close=intraday_df["Close"],
+                    name="MOIL 5m",
+                )
+            )
+            intraday_fig.update_layout(title="MOIL intraday (5m)", xaxis_rangeslider_visible=False, yaxis_title="Price")
+            st.plotly_chart(intraday_fig, use_container_width=True)
+            last_row = intraday_df.iloc[-1]
+            first_row = intraday_df.iloc[0]
+            intraday_return = (last_row["Close"] / first_row["Open"] - 1) * 100
+            session_high = intraday_df["High"].max()
+            session_low = intraday_df["Low"].min()
+            pos = None
+            try:
+                if session_high > session_low:
+                    pos = (last_row["Close"] - session_low) / (session_high - session_low)
+            except Exception:
+                pos = None
+            last_ts = intraday_df.index[-1]
+            st.caption(
+                f"Intraday change from session start: {intraday_return:.2f}% | Last close: {last_row['Close']:.2f} | "
+                f"Session high/low: {session_high:.2f} / {session_low:.2f} | Position in range: {pos*100:.1f}%" if pos is not None else ""
+            )
+            st.caption(f"Last bar: {last_ts}")
+            csv_buffer = io.StringIO()
+            intraday_df.to_csv(csv_buffer)
+            st.download_button(
+                "Download intraday OHLCV (5m)",
+                csv_buffer.getvalue(),
+                file_name="moil_intraday_5m.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("Intraday feed unavailable (yfinance blocked or MOIL not returned).")
+
+        st.markdown("#### Intraday research (VWAP + ORB)")
+        st.caption("Lightweight, research-only; uses sample data by default. Upload your own 5m CSV/Parquet to backtest.")
+        sample_intraday_path = Path("data/sample/intraday_sample_moil.csv")
+        upload = st.file_uploader("Upload intraday OHLCV (datetime, open, high, low, close, volume)", type=["csv", "parquet", "pq"], accept_multiple_files=False)
+        with st.expander("Advanced settings", expanded=False):
+            vol_mult = st.slider("Volume ratio threshold (x prev 5 bars)", 1.0, 4.0, 2.0, 0.1)
+            rr = st.slider("Risk-reward", 1.0, 3.0, 2.0, 0.1)
+            one_trade = st.checkbox("One trade per day", value=True)
+            ema_filter = st.checkbox("Require EMA20 filter", value=False)
+            slippage_bps = st.slider("Slippage + costs (bps total)", 0, 50, 7, 1)
+        run_col, dl_col = st.columns([1, 1])
+        with run_col:
+            if st.button("Run intraday backtest", use_container_width=True):
+                with st.spinner("Running VWAP + ORB backtest..."):
+                    try:
+                        if upload is not None:
+                            if upload.name.lower().endswith((".parquet", ".pq")):
+                                df_raw = pd.read_parquet(upload)
+                            else:
+                                df_raw = pd.read_csv(upload)
+                            if "symbol" not in df_raw.columns:
+                                df_raw["symbol"] = "MOIL"
+                        else:
+                            df_raw = load_intraday(sample_intraday_path).df
+                        cfg = StrategyConfig(
+                            volume_multiplier=vol_mult,
+                            risk_reward=rr,
+                            one_trade_per_day=one_trade,
+                            require_ema_filter=ema_filter,
+                            slippage_bps=slippage_bps,
+                        )
+                        prepared = prepare_intraday(df_raw, cfg)
+                        trades, daily, summary, stats = run_backtest(prepared, cfg)
+                        feats = daily_features(trades, stats, prepared)
+                        st.session_state["intraday_trades"] = trades
+                        st.session_state["intraday_daily"] = daily
+                        st.session_state["intraday_feats"] = feats
+                        st.session_state["intraday_summary"] = summary
+                        st.success(f"Backtest complete: {summary['total_trades']} trades")
+                    except Exception as e:
+                        st.error(f"Backtest failed: {e}")
+        with dl_col:
+            if "intraday_summary" in st.session_state and st.session_state.get("intraday_trades") is not None:
+                s = st.session_state["intraday_summary"]
+                trades = st.session_state["intraday_trades"]
+                daily = st.session_state.get("intraday_daily", pd.DataFrame())
+                feats = st.session_state.get("intraday_feats", pd.DataFrame())
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Trades", s.get("total_trades", 0))
+                c2.metric("Win rate", f"{s.get('win_rate', 0):.1%}")
+                c3.metric("Net PnL", f"{s.get('net_pnl', 0):.2f}")
+                st.dataframe(trades.head(15), use_container_width=True)
+                st.dataframe(daily.head(10), use_container_width=True)
+                if not feats.empty:
+                    st.dataframe(feats.head(10), use_container_width=True)
+                tbuf = io.StringIO(); trades.to_csv(tbuf, index=False)
+                dbuf = io.StringIO(); daily.to_csv(dbuf, index=False)
+                fbuf = io.StringIO(); feats.to_csv(fbuf, index=False)
+                st.download_button("Download trades CSV", tbuf.getvalue(), file_name="intraday_trades.csv", mime="text/csv")
+                st.download_button("Download daily PnL CSV", dbuf.getvalue(), file_name="intraday_daily_pnl.csv", mime="text/csv")
+                st.download_button("Download features CSV", fbuf.getvalue(), file_name="intraday_features.csv", mime="text/csv")
     with right:
         st.markdown("#### Latest snapshot")
         st.dataframe(format_snapshot(snapshot), use_container_width=True, hide_index=True)
@@ -488,15 +698,34 @@ with tabs[4]:
     with apply_col:
         if st.button("Apply Groq scores to regime", disabled=not (st.session_state.groq_scores and st.session_state.groq_scores.get("macro_scores"))):
             st.session_state.groq_scores_applied = st.session_state.groq_scores
-            st.success("Groq scores applied to current regime calculation.")
-            st.rerun()
-    with clear_col:
-        if st.button("Clear Groq scores"):
-            st.session_state.groq_scores = None
-            st.session_state.groq_scores_applied = None
-            st.session_state.groq_commentary = None
-            st.rerun()
-
+            st.markdown("#### Institutional features (live NSE preferred, sample fallback)")
+    if st.button("Build institutional features"):
+        with st.spinner("Building institutional features (live NSE if available, else sample/manual)..."):
+            feats, diag = build_institutional_features(prefer_live=True)
+            st.session_state.offline_inst_features = feats
+            st.session_state.offline_inst_diag = diag
+        st.success("Institutional features built and saved to reports/moil_institutional_features.csv")
+    if st.session_state.get("offline_inst_diag"):
+        st.caption("; ".join(st.session_state.offline_inst_diag))
+    if st.session_state.get("offline_inst_features") is not None:
+        feats = st.session_state.offline_inst_features
+        if feats is not None and not feats.empty:
+            show_cols = [c for c in [
+                "date", "bulk_net_qty", "bulk_net_value", "block_net_qty", "block_net_value",
+                "moil_bulk_threshold_hit", "moil_block_deal_flag", "mf_net_shares", "named_1pct_holder_count",
+                "sast_event_flag", "pit_event_flag"
+            ] if c in feats.columns]
+            st.dataframe(feats[show_cols], use_container_width=True, hide_index=True)
+            csv_buffer = io.StringIO()
+            feats.to_csv(csv_buffer, index=False)
+            st.download_button(
+                "Download institutional features CSV",
+                csv_buffer.getvalue(),
+                file_name="moil_institutional_features.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("Institutional features empty; ensure live NSE available or sample files exist under data/sample/.")
     if st.session_state.groq_scores:
         result = st.session_state.groq_scores
         if result.get("macro_scores"):
@@ -706,6 +935,18 @@ with tabs[7]:
 
 with tabs[8]:
     st.subheader("Data Quality Command Center")
+    # On-demand macro cache refresh (uses existing fetch_source_aware_macro_feed fallbacks)
+    if st.button("Refresh macro cache now"):
+        with st.spinner("Refreshing macro cache..."):
+            rows, diag = fetch_source_aware_macro_feed(max_results_per_query=3)
+            cache_dir = Path("data/cache")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "latest_macro_data.json").write_text(rows.to_json(orient="records"), encoding="utf-8")
+        st.success("Macro cache refreshed to data/cache/latest_macro_data.json")
+        if diag:
+            st.caption("; ".join(diag))
+        st.experimental_rerun()
+
     macro_cache = load_latest_macro_cache()
     evidence_df = macro_cache_to_evidence_rows(macro_cache)
     readiness_v2 = macro_cache_to_source_readiness(macro_cache)

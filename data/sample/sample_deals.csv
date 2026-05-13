@@ -1,0 +1,4 @@
+date,symbol,security_name,client_name,buy_sell,quantity,price,remarks,deal_type,source
+2026-05-12,MOIL,MOIL LTD,Fund A,BUY,1100000,320.5,,bulk,NSE
+2026-05-12,MOIL,MOIL LTD,Fund B,SELL,200000,321.0,,bulk,NSE
+2026-05-12,MOIL,MOIL LTD,Fund C,BUY,1500000,322.0,,block,NSE
