@@ -378,7 +378,7 @@ with tabs[0]:
                 st.plotly_chart(candle, use_container_width=True)
 
         st.markdown("#### Intraday (5m) MOIL")
-        intraday_data, intraday_err = cached_intraday_data(tuple(DEFAULT_MARKET_TICKERS.items()), demo=demo_mode)
+        intraday_data, intraday_err = cached_intraday_data(tuple(DEFAULT_MARKET_TICKERS.items()), demo=use_demo_data)
         if intraday_err:
             st.caption("; ".join(f"{k}: {v}" for k, v in intraday_err.items()))
         if intraday_data.get("MOIL") is not None and not intraday_data["MOIL"].empty:
