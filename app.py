@@ -6,7 +6,7 @@ stress, institutional flow monitoring and Groq/Llama 3.3 AI scoring.
 """
 
 from __future__ import annotations
-
+import os
 import io
 from pathlib import Path
 from typing import Dict, Tuple
@@ -157,6 +157,8 @@ if "manual_macro" not in st.session_state:
     st.session_state.manual_macro = read_manual_macro_csv(MANUAL_TEMPLATE_PATH)
 if "news_tracker" not in st.session_state:
     st.session_state.news_tracker = read_news_tracker_csv(NEWS_TRACKER_PATH)
+    if "sentiment" not in st.session_state.news_tracker.columns:
+        st.session_state.news_tracker["sentiment"] = "Neutral"
 if "groq_scores" not in st.session_state:
     st.session_state.groq_scores = None
 if "groq_scores_applied" not in st.session_state:
@@ -407,7 +409,12 @@ with tabs[4]:
     st.subheader("Groq / Llama 3.3 AI desk")
     config = get_groq_config()
     c1, c2, c3, c4, c5 = st.columns(5)
-    auto_source_ready = is_any_vendor_feed_configured() or is_serper_configured() or is_cached_macro_feed_available()
+    auto_source_ready = (
+        is_any_vendor_feed_configured()
+        or is_serper_configured()
+        or is_cached_macro_feed_available()
+        or bool(st.secrets.get("HEADLINEFEED_TOKEN", ""))
+    )
     c1.metric("Groq configured", "Yes" if is_groq_configured() else "No")
     c2.metric("Auto source pull", "Yes" if auto_source_ready else "No")
     c3.metric("Model", config["model"])
@@ -419,6 +426,10 @@ with tabs[4]:
         st.warning("Groq is not configured. Manual macro scoring and rule-based commentary remain active.")
     if not auto_source_ready:
         st.info("Automatic physical macro pull requires scheduled backend cache output, source-specific vendor feed URLs/API keys, or SERPER_API_KEY. Without them, Groq scores the current manual/news tracker rows only.")
+    else:
+        st.caption(
+            "Auto source priority: vendor endpoints → Serper (SERPER_API_KEY) → HeadlineFeed (HEADLINEFEED_TOKEN) → manual. Results are cached ~1h to avoid burning quotas."
+        )
 
     st.markdown("#### Source readiness v2")
     readiness_df = source_provider_status()
@@ -555,7 +566,7 @@ with tabs[5]:
                     st.session_state.news_tracker = pd.concat([updates, st.session_state.news_tracker], ignore_index=True)
                     st.success(f"Added {len(updates)} NSE tracker rows.")
                 else:
-                    loaded = any("OK" in str(x) for x in diagnostics)
+                    loaded = any("OK" in str(x) or "cache hit" in str(x) for x in diagnostics)
                     if loaded:
                         st.info("NSE archive feed loaded, but no MOIL bulk/block deal row was present in the latest archive.")
                     else:
@@ -602,6 +613,7 @@ with tabs[5]:
         column_config={
             "impact": st.column_config.NumberColumn("impact", min_value=-2.0, max_value=2.0, step=0.5),
             "confidence": st.column_config.NumberColumn("confidence", min_value=0.0, max_value=1.0, step=0.05),
+            "sentiment": st.column_config.SelectboxColumn("sentiment", options=["Bullish", "Neutral", "Bearish"]),
             "details": st.column_config.TextColumn("details", width="large"),
         },
     )

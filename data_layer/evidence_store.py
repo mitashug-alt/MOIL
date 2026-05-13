@@ -194,6 +194,45 @@ def _make_evidence_row(
 def evidence_rows_from_macro_cache(cache: Dict[str, Any]) -> pd.DataFrame:
     """Convert scheduled scraper JSON into canonical evidence rows."""
     rows: List[Dict[str, Any]] = []
+    # Simple list-based cache (macro_data.json list of records)
+    if isinstance(cache, list):
+        df = pd.DataFrame(cache)
+        required = {"indicator", "value", "date"}
+        if not required.issubset(df.columns):
+            return pd.DataFrame(columns=EVIDENCE_COLUMNS)
+        df = df.fillna("")
+        for _, r in df.iterrows():
+            indicator = str(r.get("indicator", "")).strip()
+            if not indicator:
+                continue
+            rows.append(
+                _make_evidence_row(
+                    indicator=indicator,
+                    period=r.get("date"),
+                    value=r.get("value"),
+                    unit=r.get("unit", ""),
+                    region=r.get("geography", ""),
+                    source_name=r.get("source_name") or r.get("source") or "cached scraper",
+                    source_url=r.get("source_url", ""),
+                    source_type="cached-scrape",
+                    source_tier=1,
+                    exact_data=str(r.get("status", "")).lower() in {"ok", "cache", "fallback"},
+                    publication_date=r.get("date"),
+                    scraped_at=r.get("retrieved_at_utc"),
+                    parser_method="simple_cache",
+                    parser_confidence=0.9,
+                    cross_source_confirmed=False,
+                    raw_text=r.get("notes", ""),
+                )
+            )
+        if not rows:
+            return pd.DataFrame(columns=EVIDENCE_COLUMNS)
+        out = pd.DataFrame(rows)
+        for col in EVIDENCE_COLUMNS:
+            if col not in out.columns:
+                out[col] = None
+        return out[EVIDENCE_COLUMNS]
+
     if not isinstance(cache, dict) or not cache:
         return pd.DataFrame(columns=EVIDENCE_COLUMNS)
 

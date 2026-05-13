@@ -1,0 +1,46 @@
+# All selectors/URLs live here; no hardcoding in code.
+rate_limit_sleep_seconds: 1.0
+
+indicators:
+  - name: "Silico-Manganese 65/17 Price (Delivered Europe)"
+    geography: "Europe"
+    unit: "$US/MT"
+    source_name: "ScrapMonster"
+    source_url: "file://./macro_scraper/local_cache/scrapmonster_silico_manganese_6517.html"
+    method: "html"
+    css_selector: "body"
+    # Use the first historical table row
+    row_regex: "Date\\s+Price\\s+Unit\\s*(\\d{4}-\\d{2}-\\d{2})\\s+([0-9,.]+)\\s*\\$US/MT"
+    row_match_index: 0
+    row_date_group: 1
+    row_value_group: 2
+
+  - name: "India Crude Steel Production (Total)"
+    geography: "India"
+    unit: "thousand tonnes"
+    source_name: "JPC via data.gov.in"
+    source_url: "./macro_scraper/local_cache/india_crude_steel.csv"
+    method: "csv"
+    value_field: "QTY"
+    date_field:
+      year: "CAL_YEAR"
+      month_number: "MONTH_NO"
+      month_label: "MONTH"
+    row_filter: "DATA_TYPE == 'CRUDE_STEEL_PROD'"
+    row_selector: "last_after_sort(CAL_YEAR, MONTH_NO)"
+    sort_by: ["CAL_YEAR", "MONTH_NO"]
+    aggregate_latest_by: ["CAL_YEAR", "MONTH_NO"]
+
+  - name: "China Steel Exports (Current Month)"
+    geography: "China"
+    unit: "tonnes"
+    source_name: "GACC"
+    source_url: ""
+    method: "none"  # force fallback only
+
+  - name: "China Power Generation (Above-scale Industrial)"
+    geography: "China"
+    unit: "亿千瓦时"
+    source_name: "NBS"
+    source_url: ""
+    method: "none"  # force fallback only

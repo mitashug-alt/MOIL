@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -35,6 +36,23 @@ DEFAULT_MARKET_TICKERS: Dict[str, str] = {
 
 STEEL_PEERS = ["JSW Steel", "SAIL", "Tata Steel"]
 CORE_TICKERS = ["MOIL", "NIFTY Metal", "JSW Steel", "SAIL", "Tata Steel", "Brent Crude", "USDINR"]
+
+# Expert weights to emphasise high-signal indicators (used in manual/AI macro layer)
+EXPERT_WEIGHTS: Dict[str, float] = {
+    # Physical market
+    "silico-manganese prices": 2.0,
+    "silico manganese prices": 2.0,
+    "india crude steel production": 1.6,
+    "china steel exports": 1.5,
+    "china power / industrial stress": 1.2,
+    # MOIL equity technicals
+    "moil vs 200dma": 1.6,
+    "moil vs 50dma": 1.3,
+    "moil 3m momentum": 1.2,
+    # Macro stress proxies
+    "brent crude": 1.1,
+    "usd inr": 1.0,
+}
 
 
 @dataclass(frozen=True)
@@ -126,24 +144,34 @@ def fetch_market_data(
     for name, ticker in tickers.items():
         clean_name = _clean_name(name)
         clean_ticker = _clean_name(ticker)
-        if not clean_name or not clean_ticker:
+        if not clean_ticker:
+            errors[clean_name] = "Ticker not set"
             continue
-        try:
-            raw = yf.download(
-                clean_ticker,
-                period=period,
-                interval=interval,
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
-            df = normalize_yfinance_frame(raw, clean_ticker)
-            if df.empty or df["Close"].dropna().empty:
-                errors[clean_name] = f"No close-price data returned for {clean_ticker}."
-            else:
-                data[clean_name] = df
-        except Exception as exc:  # provider/network specific
-            errors[clean_name] = f"{type(exc).__name__}: {exc}"
+
+        last_err = ""
+        for attempt in range(3):
+            try:
+                raw = yf.download(
+                    clean_ticker,
+                    period=period,
+                    interval=interval,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+                df = normalize_yfinance_frame(raw, clean_ticker)
+                if df.empty or df["Close"].dropna().empty:
+                    last_err = f"No close-price data returned for {clean_ticker}."
+                else:
+                    data[clean_name] = df
+                    last_err = ""
+                    break
+            except Exception as exc:  # pragma: no cover - depends on network/provider
+                last_err = f"{type(exc).__name__}: {exc}"
+            time.sleep(1.2)
+
+        if last_err:
+            errors[clean_name] = last_err
 
     return data, errors
 
@@ -497,7 +525,7 @@ def read_manual_macro_csv(path: Path) -> pd.DataFrame:
 
 
 def read_news_tracker_csv(path: Path) -> pd.DataFrame:
-    columns = ["date", "category", "item", "value", "impact", "confidence", "details", "source"]
+    columns = ["date", "category", "item", "value", "impact", "confidence", "sentiment", "details", "source"]
     if path.exists():
         try:
             df = pd.read_csv(path)
@@ -507,10 +535,16 @@ def read_news_tracker_csv(path: Path) -> pd.DataFrame:
         df = pd.DataFrame(columns=columns)
     for col in columns:
         if col not in df.columns:
-            df[col] = "" if col not in {"impact", "confidence"} else 0.0
+            if col in {"impact", "confidence"}:
+                df[col] = 0.0
+            elif col == "sentiment":
+                df[col] = "Neutral"
+            else:
+                df[col] = ""
     df = df[columns]
     df["impact"] = pd.to_numeric(df["impact"], errors="coerce").fillna(0.0).clip(-2, 2)
     df["confidence"] = pd.to_numeric(df["confidence"], errors="coerce").fillna(0.5).clip(0, 1)
+    df["sentiment"] = df["sentiment"].fillna("Neutral").astype(str).str.title()
     return df
 
 
@@ -630,6 +664,7 @@ def _manual_source_scores(manual_macro: pd.DataFrame, groq_scores: Optional[dict
         base_weight = _confidence_weight_from_row(row)
         if ai:
             raw = float(np.clip(pd.to_numeric(ai.get("signal_score", ai.get("score", 0)), errors="coerce"), -2, 2))
+            weight_adj = EXPERT_WEIGHTS.get(key, 1.0)
             data_conf = ai.get("data_confidence", row.get("data_confidence", np.nan))
             try:
                 data_conf = float(data_conf)
@@ -650,28 +685,29 @@ def _manual_source_scores(manual_macro: pd.DataFrame, groq_scores: Optional[dict
                 effective = float(effective)
             except Exception:
                 effective = raw * gate
-            applied_raw.append(raw)
-            applied_effective.append(float(np.clip(effective, -2, 2)))
+            applied_raw.append(raw * weight_adj)
+            applied_effective.append(float(np.clip(effective * weight_adj, -2 * weight_adj, 2 * weight_adj)))
             applied_conf.append(float(np.clip(data_conf / 100.0, 0, 1)))
             applied_source.append("Groq/Llama 3.3 evidence scoring")
             rationale = str(ai.get("rationale", row.get("commentary", "")))
-            rationale += f" | Raw signal {raw:+.2f}; effective signal {float(np.clip(effective, -2, 2)):+.2f}; data confidence {data_conf:.0f}/100."
+            rationale += f" | Raw signal {raw:+.2f}; effective signal {float(np.clip(effective * weight_adj, -2 * weight_adj, 2 * weight_adj)):+.2f}; data confidence {data_conf:.0f}/100; expert weight {weight_adj:.2f}."
             if gate == 0:
                 rationale += " Commentary-only: below scoring threshold."
             applied_rationale.append(rationale)
         else:
             raw = float(row.get("score", 0))
-            effective = raw * base_weight
+            weight_adj = EXPERT_WEIGHTS.get(key, 1.0)
+            effective = raw * base_weight * weight_adj
             data_conf = row.get("data_confidence", base_weight * 100)
             try:
                 data_conf = float(data_conf)
             except Exception:
                 data_conf = base_weight * 100
-            applied_raw.append(raw)
+            applied_raw.append(raw * weight_adj)
             applied_effective.append(effective)
             applied_conf.append(float(np.clip(data_conf / 100.0, 0, 1)))
             applied_source.append(str(row.get("source", "Manual")))
-            applied_rationale.append(str(row.get("commentary", "")) + f" | No Groq row; confidence weight {base_weight:.2f}.")
+            applied_rationale.append(str(row.get("commentary", "")) + f" | No Groq row; confidence weight {base_weight:.2f}; expert weight {weight_adj:.2f}.")
     manual["applied_raw_score"] = applied_raw
     manual["applied_score"] = applied_effective
     manual["applied_effective_score"] = applied_effective
