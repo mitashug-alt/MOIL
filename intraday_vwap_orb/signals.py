@@ -28,10 +28,17 @@ def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
 
 
 def volume_ratio_ok(df: pd.DataFrame, i: int, lookback: int, thresh: float) -> tuple[bool, float, float]:
+    cur_row = df.iloc[i]
+    cur_vol = cur_row["volume"]
+    # Fix #8: restrict lookback to same trading session (same date) only
+    cur_date = cur_row["date"] if "date" in df.columns else None
     start = max(0, i - lookback)
+    if cur_date is not None:
+        # Walk back only while date matches
+        while start > 0 and df.iloc[start]["date"] != cur_date:
+            start += 1
     window = df.iloc[start:i]
     avg_vol = window["volume"].mean() if not window.empty else float("nan")
-    cur_vol = df.iloc[i]["volume"]
     ratio = cur_vol / avg_vol if pd.notna(avg_vol) and avg_vol > 0 else 0
     return ratio >= thresh, cur_vol, avg_vol
 
