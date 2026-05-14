@@ -2016,14 +2016,19 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                          "Aligns trades with the short-term trend. "
                          "Currently off by default — MOIL's intraday trend reversals can make this filter too restrictive.")
                 _slip_pct = st.number_input(
-                    "Total costs % per side (brokerage + STT + slippage)",
-                    min_value=0.0, max_value=1.0, value=0.07, step=0.01,
+                    "Total cost % per side (brokerage + STT + slippage)",
+                    min_value=0.0, max_value=2.0, value=0.07, step=0.01,
                     format="%.2f", key="it_slip",
-                    help="All-in friction per trade leg as a percentage of trade value. "
-                         "Applied on both entry and exit. "
-                         "Typical breakdown: brokerage ~0.03% + STT ~0.025% + market impact ~0.015% = 0.07%. "
-                         "Use 0.10–0.15% for conservative estimates on thin/illiquid days.")
-                _slip = _slip_pct * 100  # convert % → bps for StrategyConfig
+                    help="All-in cost on each trade leg as % of traded amount.\n\n"
+                         "Example: buy 10 shares @ ₹300 = ₹3,000 + sell @ ₹310 = ₹3,100\n"
+                         "At 0.07%: cost = 3000×0.07% + 3100×0.07% = ₹2.10 + ₹2.17 = ₹4.27 total\n\n"
+                         "Typical breakdown per side:\n"
+                         "  • Brokerage: ~0.03%\n"
+                         "  • STT (intraday sell): ~0.025%\n"
+                         "  • Market impact / spread: ~0.015%\n\n"
+                         "Use 0.10–0.15% for conservative estimates on thin days.")
+                _slip = _slip_pct * 100   # % → bps for StrategyConfig.slippage_bps
+                _txn_cost_bps = 0.0      # already included in _slip — avoid double-counting
 
             if st.button("▶️ Run intraday backtest", use_container_width=True, key="it_run", type="primary"):
                 with st.spinner("Running VWAP + ORB backtest..."):
@@ -2063,7 +2068,7 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                         _cfg = StrategyConfig(
                             volume_multiplier=_vol_mult, risk_reward=_rr,
                             one_trade_per_day=_one_trade, require_ema_filter=_ema_filter,
-                            slippage_bps=_slip,
+                            slippage_bps=_slip, transaction_cost_bps=0,
                         )
                         _prepared = prepare_intraday(_df_raw, _cfg)
                         _trades, _daily, _bt_summary, _stats = run_backtest(_prepared, _cfg)
@@ -2870,14 +2875,30 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
             _bt_adaptive   = _bt_c4.checkbox("Adaptive weights", value=True,
                 help="Update weights after each resolved trade (reinforcement learning).")
             # Fix #11: cost parameters
-            with st.expander("Transaction cost settings (Fix #11)", expanded=False):
-                _btcost_c1, _btcost_c2, _btcost_c3 = st.columns(3)
-                _bt_brokerage  = _btcost_c1.number_input("Brokerage % (per side)", 0.0, 0.5, 0.03, 0.01,
-                    help="Typical discount broker: ~0.03%. Include STT in this figure.")
-                _bt_slippage   = _btcost_c2.number_input("Slippage % (per side)", 0.0, 0.5, 0.05, 0.01,
-                    help="Half-spread / market-impact estimate. 0.05% is conservative for MOIL.")
-                _bt_mtf_rate   = _btcost_c3.number_input("MTF interest rate % p.a.", 0.0, 36.0, 18.0, 0.5,
-                    help="Annual interest on leveraged (>1x) MTF positions. Typically 18% p.a. in India.")
+            with st.expander("💸 Transaction cost settings", expanded=False):
+                _btcost_c1, _btcost_c2 = st.columns(2)
+                _bt_total_cost = _btcost_c1.number_input(
+                    "Total cost % per side (brokerage + STT + slippage)",
+                    min_value=0.0, max_value=2.0, value=0.08, step=0.01, format="%.2f",
+                    help="All-in cost on each trade leg as % of traded amount.\n\n"
+                         "Example: buy 10 shares @ ₹300 = ₹3,000 + sell @ ₹310 = ₹3,100\n"
+                         "At 0.08%: cost = 3000×0.08% + 3100×0.08% = ₹2.40 + ₹2.48 = ₹4.88 total\n\n"
+                         "Typical breakdown per side:\n"
+                         "  • Brokerage: ~0.03%\n"
+                         "  • STT (delivery buy+sell): ~0.1% / (intraday sell): ~0.025%\n"
+                         "  • Market impact / spread: ~0.02%\n\n"
+                         "For positional / MTF trades use 0.15–0.20% (higher STT applies).")
+                _bt_mtf_rate   = _btcost_c2.number_input(
+                    "MTF / leveraged interest rate % p.a.",
+                    min_value=0.0, max_value=36.0, value=18.0, step=0.5, format="%.1f",
+                    help="Annual interest charged on the leveraged portion of MTF positions.\n\n"
+                         "Formula applied per trade:\n"
+                         "  Interest = Trade value × (rate% / 365) × days held\n\n"
+                         "Example: ₹3,000 trade held 5 days @ 18% p.a.\n"
+                         "  = 3000 × (18/365/100) × 5 = ₹7.40\n\n"
+                         "Typical India broker MTF rate: 18–24% p.a.")
+                _bt_brokerage = _bt_total_cost   # alias for downstream compatibility
+                _bt_slippage  = 0.0              # already included in total cost above
 
             if st.button("▶️ Run MTF Backtest", key="mtf_run_bt", type="primary"):
                 # Fetch 5y daily OHLCV: TradingView → Dhan → Zerodha → yfinance
