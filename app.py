@@ -111,6 +111,11 @@ from intraday_vwap_orb.paper_trading import (
     MAX_DAY_LOSS_INR,
     INTRADAY_WALLET_INITIAL,
     MTF_WALLET_INITIAL,
+    classify_regime,
+    _build_lr_model,
+    lr_trade_probability,
+    walk_forward_threshold_sweep,
+    LR_MIN_TRADES,
 )
 from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from_file
 from data_layer.validators import validate_evidence_dataframe
@@ -1971,6 +1976,7 @@ if _t9 is not None:
                                             volume_ratio=round(_sc["vol_ratio"], 2),
                                             or_range_pct=round(_opp_or_range_pct, 3),
                                             gap_pct=None,
+                                            regime_band=classify_regime(_opp_or_range_pct, _sc["vol_ratio"]),
                                             track="auto",
                                             qty=_auto_qty,
                                             approved_by="auto",
@@ -2058,6 +2064,7 @@ if _t9 is not None:
                                                     volume_ratio=round(_sc["vol_ratio"], 2),
                                                     or_range_pct=round(_opp_or_range_pct, 3),
                                                     gap_pct=None,
+                                                    regime_band=classify_regime(_opp_or_range_pct, _sc["vol_ratio"]),
                                                     track="manual",
                                                     qty=_man_qty,
                                                     approved_by="user",
@@ -3933,6 +3940,41 @@ if _t_lab is not None:
                     ).reset_index()
                     st.dataframe(_band_stats, use_container_width=True, hide_index=True)
 
+                # RT1: Regime-tagged P&L analytics
+                st.markdown("#### P&L by market regime at entry")
+                if "regime_band" in _closed_all.columns:
+                    _regime_order = ["trending_strong", "trending_mild", "range_bound", "choppy", "unknown"]
+                    _regime_icons = {
+                        "trending_strong": "🚀 Trending Strong",
+                        "trending_mild":   "📈 Trending Mild",
+                        "range_bound":     "⇹ Range Bound",
+                        "choppy":          "🌀 Choppy",
+                        "unknown":         "❓ Unknown",
+                    }
+                    _reg_stats = []
+                    for _reg in _regime_order:
+                        _rsub = _closed_all[_closed_all["regime_band"] == _reg]
+                        if _rsub.empty:
+                            continue
+                        _rpnl = pd.to_numeric(_rsub[_pnl_col], errors="coerce")
+                        _reg_stats.append({
+                            "regime":    _regime_icons.get(_reg, _reg),
+                            "trades":    len(_rsub),
+                            "win_rate":  f"{(_rpnl > 0).mean():.0%}",
+                            "avg_pnl":   f"₹{_rpnl.mean():+,.0f}",
+                            "total_pnl": f"₹{_rpnl.sum():+,.0f}",
+                            "sharpe":    round(_rpnl.mean() / _rpnl.std() * (252 ** 0.5), 2)
+                                         if len(_rsub) >= 2 and _rpnl.std() > 0 else 0.0,
+                        })
+                    if _reg_stats:
+                        st.dataframe(pd.DataFrame(_reg_stats), use_container_width=True, hide_index=True)
+                        st.caption(
+                            "Regime is classified at trade entry using OR-range width and volume ratio. "
+                            "High Sharpe in trending_strong = strategy works best in breakout conditions."
+                        )
+                    else:
+                        st.info("Regime data not yet available — trades created before this update show 'unknown'. Execute new trades to populate.")
+
             # ── 2. PROBABILITY CALIBRATION ────────────────────────────────────
             with _lab_b:
                 st.markdown("#### Predicted probability vs actual outcome")
@@ -3993,6 +4035,36 @@ if _t_lab is not None:
                         "Negative = over-confident. ⚠️ Bins with <5 trades are statistically unreliable."
                     )
 
+                # LR1: Logistic regression model status
+                st.markdown("#### Logistic Regression Probability Engine")
+                _n_closed = len(_closed_all)
+                if _n_closed < LR_MIN_TRADES:
+                    st.info(
+                        f"🧠 LR model unlocks at **{LR_MIN_TRADES} closed trades**. "
+                        f"Currently at **{_n_closed}** — need **{LR_MIN_TRADES - _n_closed}** more. "
+                        f"Until then, the heuristic ATR/momentum engine is active."
+                    )
+                    st.progress(_n_closed / LR_MIN_TRADES,
+                                text=f"Progress: {_n_closed}/{LR_MIN_TRADES} trades")
+                else:
+                    _lr_bundle = _build_lr_model(_closed_all)
+                    if _lr_bundle:
+                        _lrc1, _lrc2, _lrc3, _lrc4 = st.columns(4)
+                        _lrc1.metric("Model", "Logistic Regression", help="Platt-calibrated sigmoid")
+                        _lrc2.metric("Trained on", f"{_lr_bundle['n_train']} trades")
+                        _lrc3.metric("Brier score", _lr_bundle['brier'],
+                                     help="Lower is better. 0.25 = random, 0.0 = perfect.")
+                        _lrc4.metric("Features", ", ".join(_lr_bundle['features']))
+                        st.success(
+                            "✅ LR model is active. Probability estimates now blend "
+                            "logistic regression (70%) with heuristic distance-decay (30%)."
+                        )
+                    else:
+                        st.warning(
+                            "⚠️ sklearn not available or not enough class diversity. "
+                            "Install scikit-learn to activate the LR model."
+                        )
+
                 # B6: wallet reload stats — survivorship bias indicator
                 st.markdown("#### Wallet reload events (survivorship bias indicator)")
                 _wal_stats_auto = wallet_balance(
@@ -4016,60 +4088,123 @@ if _t_lab is not None:
                         "real trading would have stopped at zero. Treat win-rate with caution."
                     )
 
-            # ── 3. THRESHOLD TUNER ───────────────────────────────────────────
+            # ── 3. THRESHOLD TUNER ──────────────────────────────────────────────
             with _lab_c:
-                st.markdown("#### Data-driven threshold suggestions")
+                _tc_insample, _tc_wf = st.tabs([
+                    "📊 In-Sample Sweep",
+                    "🔀 Walk-Forward Validation",
+                ])
 
-                if "confidence_score" in _closed_all.columns and len(_closed_all) >= 5:
-                    _scores = pd.to_numeric(_closed_all["confidence_score"], errors="coerce")
-                    _pnls   = pd.to_numeric(_closed_all[_pnl_col], errors="coerce")
+                with _tc_insample:
+                    st.markdown("#### In-sample threshold sweep")
+                    st.caption(
+                        "⚠️ These metrics are computed on the same data used to generate trades — "
+                        "in-sample estimates. Use the Walk-Forward tab for out-of-sample evidence."
+                    )
 
-                    # B2: threshold sweep with min-sample reliability warning
-                    _thresh_sweep = []
-                    for _thresh in range(55, 96, 5):
-                        _sub = _closed_all[_scores >= _thresh]
-                        if len(_sub) == 0:
-                            continue
-                        _wr  = (pd.to_numeric(_sub[_pnl_col], errors="coerce") > 0).mean()
-                        _avg = pd.to_numeric(_sub[_pnl_col], errors="coerce").mean()
-                        _n   = len(_sub)
-                        _thresh_sweep.append({
-                            "min_score": _thresh, "trades": _n,
-                            "win_rate":  f"{_wr:.0%}",
-                            "avg_pnl":   f"₹{_avg:+,.0f}",
-                            "reliable":  "✅" if _n >= 20 else f"⚠️ n={_n} (<20)",
-                        })
-                    if _thresh_sweep:
-                        _tsdf = pd.DataFrame(_thresh_sweep)
-                        st.dataframe(_tsdf, use_container_width=True, hide_index=True)
-                        st.caption(
-                            f"Current AUTO threshold: **{AUTO_TRADE_THRESHOLD}**. "
-                            "⚠️ Rows with n<20 are in-sample estimates and likely overfit — "
-                            "validate on out-of-sample dates before applying."
+                    if "confidence_score" in _closed_all.columns and len(_closed_all) >= 5:
+                        _scores = pd.to_numeric(_closed_all["confidence_score"], errors="coerce")
+                        _pnls   = pd.to_numeric(_closed_all[_pnl_col], errors="coerce")
+
+                        # B2: threshold sweep with min-sample reliability warning
+                        _thresh_sweep = []
+                        for _thresh in range(55, 96, 5):
+                            _sub = _closed_all[_scores >= _thresh]
+                            if len(_sub) == 0:
+                                continue
+                            _wr  = (pd.to_numeric(_sub[_pnl_col], errors="coerce") > 0).mean()
+                            _avg = pd.to_numeric(_sub[_pnl_col], errors="coerce").mean()
+                            _n   = len(_sub)
+                            _thresh_sweep.append({
+                                "min_score": _thresh, "trades": _n,
+                                "win_rate":  f"{_wr:.0%}",
+                                "avg_pnl":   f"₹{_avg:+,.0f}",
+                                "reliable":  "✅" if _n >= 20 else f"⚠️ n={_n} (<20)",
+                            })
+                        if _thresh_sweep:
+                            _tsdf = pd.DataFrame(_thresh_sweep)
+                            st.dataframe(_tsdf, use_container_width=True, hide_index=True)
+                            st.caption(
+                                f"Current AUTO threshold: **{AUTO_TRADE_THRESHOLD}**. "
+                                "Rows with n<20 are likely overfit — use Walk-Forward tab to validate."
+                            )
+
+                        st.markdown("#### Risk band performance (max-loss budget vs actual outcome)")
+                        _rb_rows = []
+                        for _lo, _hi, _v_lo, _v_hi in [
+                            (70, 75, 5000, 5000), (75, 80, 5000, 5500), (80, 85, 5500, 6000),
+                            (85, 90, 6000, 6500), (90, 95, 6500, 7500), (95, 101, 7500, 10000),
+                        ]:
+                            _band_sub = _closed_all[(_scores >= _lo) & (_scores < _hi)]
+                            if _band_sub.empty:
+                                continue
+                            _bpnl = pd.to_numeric(_band_sub[_pnl_col], errors="coerce")
+                            _rb_rows.append({
+                                "band": f"{_lo}–{_hi}",
+                                "budget": f"₹{_v_lo:,}–₹{_v_hi:,}",
+                                "trades": len(_band_sub),
+                                "win_rate": f"{(_bpnl > 0).mean():.0%}",
+                                "avg_pnl": f"₹{_bpnl.mean():+,.0f}",
+                                "total_pnl": f"₹{_bpnl.sum():+,.0f}",
+                            })
+                        if _rb_rows:
+                            st.dataframe(pd.DataFrame(_rb_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Need at least 5 closed trades to generate threshold suggestions.")
+
+                with _tc_wf:
+                    st.markdown("#### 🔀 Walk-Forward Validation")
+                    st.info(
+                        "Splits your trade history chronologically: first **70%** as training, "
+                        "last **30%** as out-of-sample test. For each threshold candidate, shows "
+                        "whether in-sample win rate holds up on unseen dates. "
+                        "Rows flagged ⚠️ overfit mean the threshold optimised on training data "
+                        "but degraded >15pp on test data."
+                    )
+
+                    if len(_closed_all) < 10:
+                        st.warning("Need at least 10 closed trades for walk-forward validation.")
+                    else:
+                        _wf_train_pct = st.slider(
+                            "Training split", min_value=0.5, max_value=0.85,
+                            value=0.70, step=0.05, format="%.0f%%",
+                            key="wf_train_pct",
+                            help="Fraction of trades (chronological) used as training. Rest = out-of-sample test."
                         )
+                        _wf_df, _wf_warn = walk_forward_threshold_sweep(
+                            _closed_all, _pnl_col, train_pct=_wf_train_pct
+                        )
+                        if _wf_df.empty:
+                            st.warning(_wf_warn)
+                        else:
+                            st.caption(_wf_warn)
+                            st.dataframe(
+                                _wf_df.style.apply(
+                                    lambda row: [
+                                        "background-color: #2a1a1a" if row["overfit_warning"] == "⚠️ overfit"
+                                        else "" for _ in row
+                                    ], axis=1
+                                ),
+                                use_container_width=True, hide_index=True
+                            )
 
-                    st.markdown("#### Risk band performance (max-loss budget vs actual outcome)")
-                    _rb_rows = []
-                    for _lo, _hi, _v_lo, _v_hi in [
-                        (70, 75, 5000, 5000), (75, 80, 5000, 5500), (80, 85, 5500, 6000),
-                        (85, 90, 6000, 6500), (90, 95, 6500, 7500), (95, 101, 7500, 10000),
-                    ]:
-                        _band_sub = _closed_all[(_scores >= _lo) & (_scores < _hi)]
-                        if _band_sub.empty:
-                            continue
-                        _bpnl = pd.to_numeric(_band_sub[_pnl_col], errors="coerce")
-                        _rb_rows.append({
-                            "band": f"{_lo}–{_hi}",
-                            "budget": f"₹{_v_lo:,}–₹{_v_hi:,}",
-                            "trades": len(_band_sub),
-                            "win_rate": f"{(_bpnl > 0).mean():.0%}",
-                            "avg_pnl": f"₹{_bpnl.mean():+,.0f}",
-                            "total_pnl": f"₹{_bpnl.sum():+,.0f}",
-                        })
-                    if _rb_rows:
-                        st.dataframe(pd.DataFrame(_rb_rows), use_container_width=True, hide_index=True)
-                else:
-                    st.info("Need at least 5 closed trades to generate threshold suggestions.")
+                            # Best threshold = highest test_sharpe with test_n >= 3
+                            _wf_valid = _wf_df[_wf_df["test_n"] >= 3].copy()
+                            if not _wf_valid.empty:
+                                _best_wf = _wf_valid.loc[_wf_valid["test_sharpe"].idxmax()]
+                                st.success(
+                                    f"🏆 Best out-of-sample threshold: **{int(_best_wf['threshold'])}** "
+                                    f"(test win rate: {_best_wf['test_wr']}, "
+                                    f"test Sharpe: {_best_wf['test_sharpe']:+.2f}, "
+                                    f"n={int(_best_wf['test_n'])})"
+                                )
+                                if int(_best_wf["threshold"]) != AUTO_TRADE_THRESHOLD:
+                                    st.warning(
+                                        f"Current threshold is **{AUTO_TRADE_THRESHOLD}**. "
+                                        f"Walk-forward suggests **{int(_best_wf['threshold'])}** "
+                                        f"performs better out-of-sample. Apply in `confidence.py` "
+                                        f"after manual review."
+                                    )
 
             # ── 4. AGENT SUGGESTIONS ──────────────────────────────────────────
             with _lab_d:

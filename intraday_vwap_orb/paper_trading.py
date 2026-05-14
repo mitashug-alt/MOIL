@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from .confidence import AUTO_TRADE_THRESHOLD, MANUAL_REVIEW_THRESHOLD
@@ -19,6 +20,7 @@ TRADE_LOG_SCHEMA = [
     "qty", "pnl_pts", "pnl_inr",
     "confidence_score", "confidence_label",
     "volume_ratio", "or_range_pct", "gap_pct",
+    "regime_band",
     "track", "status", "exit_reason", "r_multiple",
     "approved_by", "approved_at",
 ]
@@ -39,6 +41,7 @@ class PaperSignal:
     or_range_pct: float
     gap_pct: Optional[float]
     track: str
+    regime_band: str = "unknown"         # RT1: trend-regime tag at trade entry
     qty: int = 1                         # shares traded (computed from wallet)
     status: str = "open"
     exit_time: Optional[str] = None
@@ -69,6 +72,7 @@ class PaperSignal:
             "volume_ratio": self.volume_ratio,
             "or_range_pct": self.or_range_pct,
             "gap_pct": self.gap_pct,
+            "regime_band": self.regime_band,
             "track": self.track,
             "status": self.status,
             "exit_reason": self.exit_reason,
@@ -472,6 +476,240 @@ def force_close_trade(trade: PaperSignal, current_price: float) -> PaperSignal:
     trade.pnl_inr     = round(pnl_pts * trade.qty, 2)
     trade.r_multiple  = round(pnl_pts / risk, 3) if risk > 0 else 0.0
     return trade
+
+
+# ── RT1: Regime classifier ────────────────────────────────────────────────────
+
+# Regime bands defined by OR-range pct (opening-range breakout width relative to price)
+# and volume ratio at entry.
+# Labels: "trending_strong" | "trending_mild" | "range_bound" | "choppy"
+def classify_regime(or_range_pct: float, volume_ratio: float) -> str:
+    """
+    Tag market regime at trade entry using two structural features:
+      - or_range_pct: opening range width as % of price (narrow = range-bound)
+      - volume_ratio: entry bar volume vs 20-bar average (high = participation)
+
+    Regime map:
+      high vol + wide OR  → trending_strong
+      high vol + narrow OR → trending_mild  (breakout attempt)
+      low vol  + wide OR  → range_bound
+      low vol  + narrow OR → choppy
+    """
+    try:
+        orp = float(or_range_pct or 0)
+        vr  = float(volume_ratio or 1)
+    except (TypeError, ValueError):
+        return "unknown"
+
+    high_vol  = vr  >= 1.5
+    wide_or   = orp >= 0.5   # 0.5% of price is a meaningful intraday range
+
+    if high_vol and wide_or:
+        return "trending_strong"
+    elif high_vol and not wide_or:
+        return "trending_mild"
+    elif not high_vol and wide_or:
+        return "range_bound"
+    else:
+        return "choppy"
+
+
+# ── LR1: Logistic regression probability engine ───────────────────────────────
+
+# Minimum closed trades required before activating LR model
+LR_MIN_TRADES = 100
+
+# Feature names used by the LR model (must be numeric, present in trade log)
+LR_FEATURE_COLS = [
+    "confidence_score",
+    "volume_ratio",
+    "or_range_pct",
+]
+
+
+def _build_lr_model(closed_df: pd.DataFrame):
+    """
+    Fit a logistic regression model on closed trade history.
+    Target: 1 if trade was a win (pnl_inr > 0), 0 otherwise.
+    Features: LR_FEATURE_COLS.
+
+    Returns (model, scaler, feature_cols_used, brier_score) or None if sklearn unavailable.
+    Uses Platt scaling (sigmoid calibration) via CalibratedClassifierCV.
+    """
+    try:
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.metrics import brier_score_loss
+    except ImportError:
+        return None
+
+    pnl_col = "pnl_inr" if "pnl_inr" in closed_df.columns else "pnl_pts"
+    feat_cols = [c for c in LR_FEATURE_COLS if c in closed_df.columns]
+    if not feat_cols:
+        return None
+
+    df = closed_df.copy()
+    df["_target"] = (pd.to_numeric(df[pnl_col], errors="coerce") > 0).astype(int)
+    df[feat_cols] = df[feat_cols].apply(pd.to_numeric, errors="coerce")
+    df = df[feat_cols + ["_target"]].dropna()
+
+    if len(df) < LR_MIN_TRADES or df["_target"].nunique() < 2:
+        return None
+
+    X = df[feat_cols].values
+    y = df["_target"].values
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    base = LogisticRegression(max_iter=500, random_state=42)
+    model = CalibratedClassifierCV(base, method="sigmoid", cv=3)
+    model.fit(X_scaled, y)
+
+    y_prob = model.predict_proba(X_scaled)[:, 1]
+    brier  = round(float(brier_score_loss(y, y_prob)), 4)
+
+    return {"model": model, "scaler": scaler, "features": feat_cols, "brier": brier,
+            "n_train": len(df), "win_rate": float(y.mean())}
+
+
+def lr_trade_probability(
+    trade: "PaperSignal",
+    recent_bars: pd.DataFrame,
+    lr_model_bundle: Optional[dict],
+) -> dict:
+    """
+    Compute target/stop probabilities using LR model if available and trained,
+    otherwise fall back to the heuristic live_trade_probability().
+
+    Returns same dict schema as live_trade_probability() plus 'model_used' key.
+    """
+    base = live_trade_probability(trade, recent_bars)
+
+    if lr_model_bundle is None:
+        base["model_used"] = "heuristic"
+        return base
+
+    try:
+        feat_vals = []
+        feat_map  = {
+            "confidence_score": float(trade.confidence_score),
+            "volume_ratio":     float(trade.volume_ratio),
+            "or_range_pct":     float(trade.or_range_pct or 0),
+        }
+        for f in lr_model_bundle["features"]:
+            feat_vals.append(feat_map.get(f, 0.0))
+
+        X = np.array(feat_vals).reshape(1, -1)
+        X_sc = lr_model_bundle["scaler"].transform(X)
+        win_prob = float(lr_model_bundle["model"].predict_proba(X_sc)[0, 1])
+
+        # Map win_prob → target_prob / stop_prob
+        # Win ≈ target hit, so use win_prob as target_prob
+        # Blend 30% heuristic to retain distance-decay signal
+        blend = 0.7
+        target_prob = blend * win_prob + (1 - blend) * base["target_prob"]
+        stop_prob   = 1.0 - target_prob
+        # Clamp and re-normalise
+        target_prob = max(0.05, min(0.95, target_prob))
+        stop_prob   = max(0.05, min(0.95, stop_prob))
+        _t = target_prob + stop_prob
+        base["target_prob"] = round(target_prob / _t, 3)
+        base["stop_prob"]   = round(stop_prob   / _t, 3)
+        base["model_used"]  = "logistic_regression"
+    except Exception:
+        base["model_used"] = "heuristic_fallback"
+
+    return base
+
+
+# ── WF1: Walk-forward validation helper ──────────────────────────────────────
+
+def walk_forward_threshold_sweep(
+    closed_df: pd.DataFrame,
+    pnl_col: str = "pnl_inr",
+    train_pct: float = 0.70,
+    thresholds: Optional[list] = None,
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Walk-forward validation for threshold sweep.
+
+    Splits closed trades chronologically: first train_pct% as training,
+    remaining as out-of-sample test. For each threshold candidate,
+    reports in-sample and out-of-sample win rate and Sharpe ratio.
+
+    Returns (results_df, warning_message).
+    """
+    if thresholds is None:
+        thresholds = list(range(55, 96, 5))
+
+    if "confidence_score" not in closed_df.columns or len(closed_df) < 10:
+        return pd.DataFrame(), "Need at least 10 closed trades for walk-forward validation."
+
+    # Sort by trade_date chronologically
+    df = closed_df.copy()
+    df["_date_parsed"] = pd.to_datetime(df["trade_date"], errors="coerce")
+    df = df.sort_values("_date_parsed").reset_index(drop=True)
+
+    split_idx = int(len(df) * train_pct)
+    if split_idx < 5 or (len(df) - split_idx) < 3:
+        return pd.DataFrame(), (
+            f"Not enough trades for a reliable split "
+            f"(train={split_idx}, test={len(df)-split_idx}). Need ≥10 total."
+        )
+
+    train_df = df.iloc[:split_idx]
+    test_df  = df.iloc[split_idx:]
+
+    train_cutoff = str(train_df["_date_parsed"].max().date())
+    test_start   = str(test_df["_date_parsed"].min().date())
+
+    scores_tr  = pd.to_numeric(train_df["confidence_score"], errors="coerce")
+    scores_te  = pd.to_numeric(test_df["confidence_score"],  errors="coerce")
+    pnls_tr    = pd.to_numeric(train_df[pnl_col], errors="coerce")
+    pnls_te    = pd.to_numeric(test_df[pnl_col],  errors="coerce")
+
+    def _sharpe(pnl_series: pd.Series) -> float:
+        s = pnl_series.dropna()
+        if len(s) < 2 or s.std() == 0:
+            return 0.0
+        return round(float(s.mean() / s.std() * math.sqrt(252)), 2)
+
+    rows = []
+    for thresh in thresholds:
+        tr_sub  = train_df[scores_tr >= thresh]
+        te_sub  = test_df[scores_te  >= thresh]
+        tr_pnl  = pd.to_numeric(tr_sub[pnl_col], errors="coerce")
+        te_pnl  = pd.to_numeric(te_sub[pnl_col], errors="coerce")
+
+        tr_wr   = (tr_pnl > 0).mean() if len(tr_sub) else float("nan")
+        te_wr   = (te_pnl > 0).mean() if len(te_sub) else float("nan")
+        tr_sh   = _sharpe(tr_pnl)
+        te_sh   = _sharpe(te_pnl)
+
+        overfit = (
+            not (math.isnan(tr_wr) or math.isnan(te_wr))
+            and tr_wr - te_wr > 0.15
+        )
+
+        rows.append({
+            "threshold":       thresh,
+            "train_n":         len(tr_sub),
+            "train_wr":        f"{tr_wr:.0%}" if not math.isnan(tr_wr) else "—",
+            "train_sharpe":    tr_sh,
+            "test_n":          len(te_sub),
+            "test_wr":         f"{te_wr:.0%}" if not math.isnan(te_wr) else "—",
+            "test_sharpe":     te_sh,
+            "overfit_warning": "⚠️ overfit" if overfit else "✅",
+        })
+
+    warning = (
+        f"Training: trades up to {train_cutoff} (n={split_idx})  |  "
+        f"Out-of-sample test: from {test_start} (n={len(df)-split_idx}).  "
+        f"Rows where train win rate > test win rate by >15pp are flagged ⚠️ overfit."
+    )
+    return pd.DataFrame(rows), warning
 
 
 def paper_log_to_df(log: list) -> pd.DataFrame:
