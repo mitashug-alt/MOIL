@@ -10,6 +10,4 @@ lxml>=5.0
 html5lib>=1.1
 pdfplumber>=0.11
 python-dateutil>=2.9
-selenium>=4.20
-webdriver-manager>=4.0
-tvdatafeed>=2.0.0
+git+https://github.com/StreamAlpha/tvdatafeed.git
