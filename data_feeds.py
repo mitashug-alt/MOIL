@@ -142,7 +142,7 @@ def _fetch_tradingview(
     try:
         from tvdatafeed import TvDatafeed, Interval  # type: ignore
     except ImportError:
-        raise ImportError("tvdatafeed not installed. Run: pip install tvdatafeed")
+        raise ImportError("tvdatafeed not installed. Run: pip install tvdatafeed-enhanced")
 
     symbol_info = _TV_SYMBOL_MAP.get(ticker)
     if symbol_info is None:
