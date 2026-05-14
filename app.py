@@ -41,6 +41,7 @@ from macro_radar import (
     fetch_nse_deals,
     generate_demo_market_data,
     generate_rule_based_commentary,
+    localize_to_ist,
     metric_snapshot,
     normalize_manual_macro,
     normalize_to_100,
@@ -395,7 +396,7 @@ with tabs[0]:
         if intraday_err:
             st.caption("; ".join(f"{k}: {v}" for k, v in intraday_err.items()))
         if intraday_data.get("MOIL") is not None and not intraday_data["MOIL"].empty:
-            intraday_df = intraday_data["MOIL"].tail(200)
+            intraday_df = localize_to_ist(intraday_data["MOIL"].tail(200))
             intraday_fig = go.Figure(
                 go.Candlestick(
                     x=intraday_df.index,

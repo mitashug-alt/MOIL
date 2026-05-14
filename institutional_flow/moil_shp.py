@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Tuple
 
@@ -95,7 +95,7 @@ def parse_supplemental_csv(path: Path, source_url: str) -> List[ShareholdingRow]
                 percentage=float(r["percentage"]),
                 source_url=source_url,
                 source_file=str(path),
-                extracted_at=datetime.utcnow().isoformat(),
+                extracted_at=(datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat(),
             )
         )
     return rows

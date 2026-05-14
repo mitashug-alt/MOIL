@@ -5,7 +5,7 @@ import io
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse
@@ -86,7 +86,7 @@ class MoilPdfScraper:
 
     @staticmethod
     def now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
 
     @staticmethod
     def sha256(data: bytes) -> str:

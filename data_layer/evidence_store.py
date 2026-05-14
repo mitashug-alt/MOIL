@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -53,11 +53,15 @@ EVIDENCE_COLUMNS = [
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # IST is UTC + 5:30
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist_time.isoformat()
 
 
 def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # IST is UTC + 5:30
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist_time.strftime("%Y-%m-%d")
 
 
 def _safe_str(x: Any) -> str:

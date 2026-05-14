@@ -1,0 +1,2 @@
+date,symbol,orb_high,orb_low,orb_range_pct,first_breakout_side,first_breakout_time,first_breakout_volume_ratio,vwap_breakout_signal,valid_long_signal_count,valid_short_signal_count,rejected_low_volume_signal_count,rejected_below_vwap_long_count,rejected_above_vwap_short_count,strategy_trade_taken,strategy_side,strategy_net_pnl,strategy_realized_r,strategy_exit_reason,close_vs_vwap_pct_at_1100
+2026-05-12,MOIL,305,299,2.0066889632107023,,,,False,0,0,15,0,0,False,,0.0,0.0,,2.3985239852398554

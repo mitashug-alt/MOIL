@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import pandas as pd
@@ -26,7 +26,7 @@ def _parse_date(value: Any) -> pd.Timestamp | None:
 
 def freshness_points(publication_date: Any = None, scraped_at: Any = None, today: pd.Timestamp | None = None) -> tuple[int, str]:
     """Return 0-20 freshness points and a readable note."""
-    today = today or pd.Timestamp.now(tz="UTC").normalize()
+    today = today or (pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=5, minutes=30)).normalize()
     parsed = _parse_date(publication_date) or _parse_date(scraped_at)
     if parsed is None:
         return 8, "freshness unknown"

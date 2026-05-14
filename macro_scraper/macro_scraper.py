@@ -17,7 +17,7 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -115,7 +115,7 @@ def enforce_output_schema(df: pd.DataFrame) -> None:
 
 
 def now_utc_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%dT%H:%M:%S IST")
 
 
 def make_session(timeout: int = 20, retries: int = 3, backoff: float = 1.5) -> requests.Session:

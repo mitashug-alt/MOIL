@@ -5,7 +5,7 @@ import io
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
@@ -55,7 +55,7 @@ class IndiaSteelScraper:
 
     @staticmethod
     def now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
 
     @staticmethod
     def sha256_bytes(data: bytes) -> str:

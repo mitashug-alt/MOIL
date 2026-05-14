@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -19,13 +19,13 @@ except ImportError as exc:  # pragma: no cover
 
 
 def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
 
 
 def main() -> None:
     Path("data/cache").mkdir(parents=True, exist_ok=True)
     Path("data/history").mkdir(parents=True, exist_ok=True)
-    run_id = f"moil_macro_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    run_id = f"moil_macro_{(datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime('%Y%m%d_%H%M%S')}"
     result = {"ok": True, "scrape_run_id": run_id, "started_at": now(), "moil": None, "html_sources": [], "errors": []}
 
     try:

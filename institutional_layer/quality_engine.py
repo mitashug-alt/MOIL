@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -34,7 +34,7 @@ HFT_PROP_KEYWORDS = [
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
 
 
 
@@ -116,7 +116,7 @@ def freshness_score(event_date: Any = None, scraped_at: Any = None, evidence_typ
     if not event_dt:
         return 2, "No parsable event/quarter date; scrape timestamp is not evidence date.", None
 
-    age_days = max(0, (datetime.now(timezone.utc) - event_dt).days)
+    age_days = max(0, ((datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)) - event_dt).days)
     typ = _norm_text(evidence_type)
 
     if "shareholding" in typ:

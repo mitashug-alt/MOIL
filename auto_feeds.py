@@ -11,7 +11,7 @@ import io
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -341,7 +341,9 @@ def source_provider_status() -> pd.DataFrame:
 
 
 def _today_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # IST is UTC + 5:30
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist_time.strftime("%Y-%m-%d")
 
 
 def _safe_request_get(url: str, timeout: int = 20, retries: int = 3, backoff: float = 1.5) -> Tuple[bool, str, str]:

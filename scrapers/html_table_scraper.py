@@ -5,7 +5,7 @@ import io
 import json
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -51,7 +51,7 @@ class HtmlTableScraper:
 
     @staticmethod
     def now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).isoformat()
 
     @staticmethod
     def page_hash(html: str) -> str:

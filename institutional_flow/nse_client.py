@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -155,4 +155,6 @@ class NSEClient:
 
 
 def iso_today() -> str:
-    return datetime.utcnow().date().isoformat()
+    # IST is UTC + 5:30
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist_time.date().isoformat()

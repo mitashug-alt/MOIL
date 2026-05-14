@@ -8,7 +8,7 @@ scheduled jobs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Tuple
@@ -74,8 +74,27 @@ class RegimeSummary:
         return self.raw_score
 
 
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+def _now_ist() -> str:
+    # IST is UTC + 5:30
+    ist_time = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    return ist_time.strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+def localize_to_ist(df: pd.DataFrame) -> pd.DataFrame:
+    """Safely convert a DataFrame index from UTC/Exchange time to IST (naive)."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if isinstance(out.index, pd.DatetimeIndex):
+        try:
+            if out.index.tz is None:
+                # Assume UTC if naive
+                out.index = out.index.tz_localize("UTC").tz_convert("Asia/Kolkata").tz_localize(None)
+            else:
+                out.index = out.index.tz_convert("Asia/Kolkata").tz_localize(None)
+        except Exception:
+            pass
+    return out
 
 
 def _clean_name(name: object) -> str:
@@ -933,7 +952,7 @@ def compute_regime_score(
 
     scorecard = pd.DataFrame(rows)
     if scorecard.empty:
-        summary = RegimeSummary(0, 1, -1, 50, "Neutral / mixed cycle", "Unknown", "Watch", 0, 0, _now_utc())
+        summary = RegimeSummary(0, 1, -1, 50, "Neutral / mixed cycle", "Unknown", "Watch", 0, 0, _now_ist())
         return scorecard, summary
 
     raw_score = float(scorecard["points"].sum())
@@ -978,7 +997,7 @@ def compute_regime_score(
         alert_level=alert_level,
         confidence_score=round(confidence_score, 1),
         data_quality_score=round(data_q, 1),
-        updated_at=_now_utc(),
+        updated_at=_now_ist(),
     )
     return scorecard.sort_values("points", ascending=False), summary
 
