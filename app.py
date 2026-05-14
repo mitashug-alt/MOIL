@@ -1970,14 +1970,14 @@ if _t9 is not None:
                     else:
                         st.info(f"No trades on {_sel_date}.")
 
-            st.markdown("---")
-            _tbuf = io.StringIO(); _trades.to_csv(_tbuf, index=False)
-            _dbuf = io.StringIO(); _daily.to_csv(_dbuf, index=False)
-            _fbuf = io.StringIO(); _feats.to_csv(_fbuf, index=False)
-            _dc1, _dc2, _dc3 = st.columns(3)
-            _dc1.download_button("⬇ Trades CSV", _tbuf.getvalue(), file_name="intraday_trades.csv", mime="text/csv", use_container_width=True)
-            _dc2.download_button("⬇ Daily PnL CSV", _dbuf.getvalue(), file_name="intraday_daily_pnl.csv", mime="text/csv", use_container_width=True)
-            _dc3.download_button("⬇ Features CSV", _fbuf.getvalue(), file_name="intraday_features.csv", mime="text/csv", use_container_width=True)
+                st.markdown("---")
+                _tbuf = io.StringIO(); _trades.to_csv(_tbuf, index=False)
+                _dbuf = io.StringIO(); _daily.to_csv(_dbuf, index=False)
+                _fbuf = io.StringIO(); _feats.to_csv(_fbuf, index=False)
+                _dc1, _dc2, _dc3 = st.columns(3)
+                _dc1.download_button("⬇ Trades CSV", _tbuf.getvalue(), file_name="intraday_trades.csv", mime="text/csv", use_container_width=True)
+                _dc2.download_button("⬇ Daily PnL CSV", _dbuf.getvalue(), file_name="intraday_daily_pnl.csv", mime="text/csv", use_container_width=True)
+                _dc3.download_button("⬇ Features CSV", _fbuf.getvalue(), file_name="intraday_features.csv", mime="text/csv", use_container_width=True)
 
     with _t9:
         with _mtf_sub:
