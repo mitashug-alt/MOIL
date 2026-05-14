@@ -10,3 +10,9 @@ grok upgrade/
 data/cache/_uploaded_verified_evidence.csv
 data/cache/_uploaded_verified_evidence.json
 .streamlit/secrets.toml
+
+# Research reports — generated locally, not for version control
+docs/bias_handling_research.md
+docs/bias_handling_research.docx
+docs/*.docx
+docs/*.pdf

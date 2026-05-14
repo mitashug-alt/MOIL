@@ -100,6 +100,17 @@ from intraday_vwap_orb.paper_trading import (
     resolve_paper_trade,
     paper_log_to_df,
     summarise_track,
+    compute_qty,
+    wallet_balance,
+    auto_trade_blocked,
+    today_pnl_inr,
+    max_loss_for_confidence,
+    live_trade_probability,
+    force_close_trade,
+    EXIT_LABEL_MAP,
+    MAX_DAY_LOSS_INR,
+    INTRADAY_WALLET_INITIAL,
+    MTF_WALLET_INITIAL,
 )
 from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from_file
 from data_layer.validators import validate_evidence_dataframe
@@ -718,6 +729,7 @@ if APP_MODE == "trader":
         "Alerts & commentary",
         "📈 Intraday",
         "📊 Model Evidence",
+        "🧪 Strategy Lab",
     ]
 else:
     _tab_labels = [
@@ -1779,38 +1791,209 @@ if _t9 is not None:
                         with _thresh_col:
                             st.metric("Auto threshold", f"≥ {AUTO_TRADE_THRESHOLD}")
                             st.metric("Manual review threshold", f"≥ {MANUAL_REVIEW_THRESHOLD}")
+                            st.metric("Daily loss cap", f"₹{MAX_DAY_LOSS_INR:,}")
 
                         with _auto_col:
-                            if st.button("🤖 Auto-execute high-confidence signals", key="pt_auto_exec"):
-                                _new_count = 0
-                                _existing_ids = {t.id for t in st.session_state.paper_log}
-                                for _sc in _scored:
-                                    if _sc["track"] != "auto":
-                                        continue
-                                    _sig_id = f"{_opp_date}_{_sc['sig'].idx}_{_sc['sig'].side}"
-                                    if _sig_id in _existing_ids:
-                                        continue
-                                    _ps = PaperSignal(
-                                        id=_sig_id,
-                                        trade_date=str(_opp_date),
-                                        signal_time=str(_opp_day.iloc[_sc["sig"].idx]["time"]),
-                                        side=_sc["sig"].side,
-                                        entry_price=_sc["entry_px"],
-                                        stop=_sc["stop_px"],
-                                        target=_sc["target_px"],
-                                        confidence_score=_sc["cr"].score,
-                                        confidence_label=_sc["cr"].label,
-                                        volume_ratio=round(_sc["vol_ratio"], 2),
-                                        or_range_pct=round(_opp_or_range_pct, 3),
-                                        gap_pct=None,
-                                        track="auto",
-                                        approved_by="auto",
-                                        approved_at=str(pd.Timestamp.now()),
+                            # ── Historical probability estimate ───────────────────
+                            _pt_df_hist = paper_log_to_df(st.session_state.paper_log)
+                            _hist_stats = summarise_track(_pt_df_hist, "auto")
+                            _hist_wr = _hist_stats["win_rate"]
+                            _hist_n  = _hist_stats["trades"]
+                            _auto_sigs = [_sc for _sc in _scored if _sc["track"] == "auto"]
+                            _avg_conf  = sum(_sc["cr"].score for _sc in _auto_sigs) / len(_auto_sigs) if _auto_sigs else 0
+                            _conf_prob = _avg_conf / 100
+                            _est_prob  = (_hist_wr * 0.5 + _conf_prob * 0.5) if _hist_n >= 3 else _conf_prob
+
+                            # ── Guard state ───────────────────────────────────────
+                            _blocked, _block_reason = auto_trade_blocked(st.session_state.paper_log, "auto")
+                            _today_pnl = today_pnl_inr(st.session_state.paper_log, "auto")
+                            _new_count = 0
+                            _existing_ids = {t.id for t in st.session_state.paper_log}
+                            _open_auto = [t for t in st.session_state.paper_log if t.track == "auto" and t.status == "open"]
+
+                            # Initialise session flags once
+                            if "pt_force_close_pending" not in st.session_state:
+                                st.session_state.pt_force_close_pending = False
+                            if "pt_prob_logic_enabled" not in st.session_state:
+                                st.session_state.pt_prob_logic_enabled = True
+
+                            # ── Live probability monitoring for open trades ───────
+                            if _open_auto:
+                                with st.expander(f"📡 Live monitor — {len(_open_auto)} open auto trade(s)", expanded=True):
+                                    # ON/OFF toggle for probability-based auto-close
+                                    _prob_tog_col, _prob_info_col = st.columns([1, 3])
+                                    _prob_enabled = _prob_tog_col.toggle(
+                                        "Probability auto-close",
+                                        value=st.session_state.pt_prob_logic_enabled,
+                                        key="pt_prob_toggle",
+                                        help="ON: auto-closes trade if target prob < 50% (profit) or stop prob > 75% (loss).\n"
+                                             "OFF: probabilities are shown for information only — stop/target/15:15 logic applies.",
                                     )
-                                    _future_bars = _opp_day.iloc[_sc["entry_bar_idx"] + 1:]
-                                    _ps = resolve_paper_trade(_ps, _future_bars)
-                                    st.session_state.paper_log.append(_ps)
-                                    _new_count += 1
+                                    st.session_state.pt_prob_logic_enabled = _prob_enabled
+                                    if _prob_enabled:
+                                        _prob_info_col.caption(
+                                            "🟢 Active — will auto-close: profit trade if target prob < 50%, "
+                                            "loss trade if stop prob > 75%."
+                                        )
+                                    else:
+                                        _prob_info_col.caption(
+                                            "⚪ Off — probabilities shown for info only. "
+                                            "Trades follow normal stop / target / 15:15 exit logic."
+                                        )
+
+                                    _live_df, _live_src, _live_err = fetch_ohlcv("MOIL.NS", interval="1m", period="1d")
+                                    if _live_df.empty:
+                                        _live_df, _live_src, _live_err = fetch_ohlcv("MOIL.NS", interval="5m", period="1d")
+                                    if not _live_df.empty:
+                                        _live_df = _live_df.reset_index()
+                                        _live_df.columns = [c.lower() for c in _live_df.columns]
+                                        _live_interval = "1m" if _live_src else "5m"
+                                    else:
+                                        _live_interval = "—"
+
+                                    for _ot in _open_auto:
+                                        _prob = live_trade_probability(_ot, _live_df if not _live_df.empty else pd.DataFrame())
+                                        _tgt_p  = _prob["target_prob"]
+                                        _stp_p  = _prob["stop_prob"]
+                                        _cur_px = _prob["current_price"]
+                                        _unreal_inr = _prob["pnl_inr"]
+                                        _unreal_color = "#26a69a" if _unreal_inr >= 0 else "#ef5350"
+
+                                        # Determine if prob thresholds would trigger
+                                        _would_close_reason = None
+                                        if _unreal_inr >= 0 and _tgt_p < 0.50:
+                                            _would_close_reason = "prob_target_low"
+                                        elif _unreal_inr < 0 and _stp_p > 0.75:
+                                            _would_close_reason = "prob_stop_high"
+
+                                        _alert_badge = ""
+                                        if _would_close_reason and _prob_enabled:
+                                            _alert_badge = f" &nbsp;<span style='background:#ef5350;color:#fff;border-radius:4px;padding:1px 6px;font-size:0.75rem;'>⚡ {EXIT_LABEL_MAP.get(_would_close_reason, _would_close_reason)}</span>"
+                                        elif _would_close_reason:
+                                            _alert_badge = f" &nbsp;<span style='background:#555;color:#ccc;border-radius:4px;padding:1px 6px;font-size:0.75rem;'>ℹ️ would close (prob OFF)</span>"
+
+                                        st.markdown(
+                                            f"<div style='background:#1e2130;border-radius:6px;padding:8px 14px;margin-bottom:6px;'>"
+                                            f"<b style='color:#d1d4dc;'>{_ot.id}</b> "
+                                            f"<span style='color:#868993;'>{_ot.side} @ ₹{_ot.entry_price:.2f}</span>"
+                                            f"{_alert_badge} &nbsp;|&nbsp; "
+                                            f"<span style='color:{_unreal_color};font-weight:600;'>Unrealised: ₹{_unreal_inr:+,.0f}</span> "
+                                            f"<span style='color:#868993;font-size:0.8rem;'>(@ ₹{_cur_px:.2f} via {_live_interval})</span><br>"
+                                            f"<span style='color:#26a69a;'>🎯 Target prob: {_tgt_p:.0%}</span> &nbsp;|&nbsp; "
+                                            f"<span style='color:#ef5350;'>🛑 Stop prob: {_stp_p:.0%}</span>"
+                                            f"</div>",
+                                            unsafe_allow_html=True,
+                                        )
+
+                                        # Only auto-close if toggle is ON AND threshold met AND live price available
+                                        if _prob_enabled and _would_close_reason and _cur_px > 0:
+                                            force_close_trade(_ot, _cur_px)
+                                            _ot.exit_reason = _would_close_reason
+                                            st.warning(
+                                                f"⚡ Auto-closed **{_ot.id}** at ₹{_cur_px:.2f} "
+                                                f"({EXIT_LABEL_MAP.get(_would_close_reason, _would_close_reason)}) "
+                                                f"→ ₹{_ot.pnl_inr:+,.0f}"
+                                            )
+                                        # If toggle OFF or threshold not met → no action; existing logic continues
+
+                            # ── Force-close popup when user clicks auto-execute with open trade ──
+                            # B9: check daily-loss block AFTER force-close path so user
+                            # always gets the force-close offer when open trade exists,
+                            # even if daily loss cap was also hit
+                            if _blocked and _block_reason == "open_trade_exists" and _open_auto:
+                                _open_t = _open_auto[0]
+                                _live_px_fc = 0.0
+                                try:
+                                    _fc_df, _, _ = fetch_ohlcv("MOIL.NS", interval="1m", period="1d")
+                                    if not _fc_df.empty:
+                                        _fc_df.columns = [c.lower() for c in _fc_df.reset_index().columns]
+                                        _live_px_fc = float(_fc_df.reset_index().iloc[-1].get("close", 0))
+                                except Exception:
+                                    pass
+                                _fc_pnl_pts = (_live_px_fc - _open_t.entry_price) if _open_t.side == "LONG" else (_open_t.entry_price - _live_px_fc)
+                                _fc_pnl_inr = round(_fc_pnl_pts * _open_t.qty, 2)
+                                _fc_color   = "#26a69a" if _fc_pnl_inr >= 0 else "#ef5350"
+
+                                st.markdown(
+                                    f"<div style='background:#2a1a1a;border:1px solid #ef5350;border-radius:8px;padding:12px 16px;'>"
+                                    f"<span style='color:#ef5350;font-weight:700;'>⏸️ Open trade exists: {_open_t.id}</span><br>"
+                                    f"Side: <b>{_open_t.side}</b> &nbsp;|&nbsp; "
+                                    f"Entry: ₹{_open_t.entry_price:.2f} &nbsp;|&nbsp; "
+                                    f"Live px: ₹{_live_px_fc:.2f}<br>"
+                                    f"Net P&L if closed now: <span style='color:{_fc_color};font-weight:700;'>₹{_fc_pnl_inr:+,.0f}</span>"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                _fc_c1, _fc_c2 = st.columns([1, 3])
+                                if _fc_c1.button("✅ Force close & proceed", key="pt_force_close_ok",
+                                                 help="Closes current open trade at live price, then executes next signals."):
+                                    if _live_px_fc > 0:
+                                        force_close_trade(_open_t, _live_px_fc)
+                                    else:
+                                        force_close_trade(_open_t, _open_t.entry_price)
+                                    st.session_state.pt_force_close_pending = True
+                                    st.rerun()
+                                _fc_c2.caption("Cancel: keep the open trade running and wait for it to close naturally.")
+
+                            elif not _blocked:
+                                _btn_label = (
+                                    f"🤖 Auto-execute  |  {len(_auto_sigs)} signal(s)  |  "
+                                    f"Est. prob {_est_prob:.0%}"
+                                    + (f"  |  Hist W/R {_hist_wr:.0%} ({_hist_n}T)" if _hist_n >= 3 else "  |  (no history yet)")
+                                )
+                                if st.button(_btn_label, key="pt_auto_exec",
+                                             help="Executes auto-threshold signals sequentially. "
+                                                  "Blocked if an open trade exists or daily loss ≥ ₹10,000. "
+                                                  "Position size scales with confidence (₹5K–₹10K max loss).") \
+                                        or st.session_state.pt_force_close_pending:
+                                    st.session_state.pt_force_close_pending = False
+                                    for _sc in _scored:
+                                        if _sc["track"] != "auto":
+                                            continue
+                                        _blk, _ = auto_trade_blocked(st.session_state.paper_log, "auto")
+                                        if _blk:
+                                            break
+                                        _sig_id = f"{_opp_date}_{_sc['sig'].idx}_{_sc['sig'].side}"
+                                        if _sig_id in _existing_ids:
+                                            continue
+                                        _auto_bal = wallet_balance(st.session_state.paper_log, "auto", INTRADAY_WALLET_INITIAL)
+                                        _auto_qty = compute_qty(_sc["entry_px"], _sc["stop_px"], _auto_bal, _sc["cr"].score)
+                                        _ps = PaperSignal(
+                                            id=_sig_id,
+                                            trade_date=str(_opp_date),
+                                            signal_time=str(_opp_day.iloc[_sc["sig"].idx]["time"]),
+                                            side=_sc["sig"].side,
+                                            entry_price=_sc["entry_px"],
+                                            stop=_sc["stop_px"],
+                                            target=_sc["target_px"],
+                                            confidence_score=_sc["cr"].score,
+                                            confidence_label=_sc["cr"].label,
+                                            volume_ratio=round(_sc["vol_ratio"], 2),
+                                            or_range_pct=round(_opp_or_range_pct, 3),
+                                            gap_pct=None,
+                                            track="auto",
+                                            qty=_auto_qty,
+                                            approved_by="auto",
+                                            approved_at=str(pd.Timestamp.now()),
+                                        )
+                                        _future_bars = _opp_day.iloc[_sc["entry_bar_idx"] + 1:]
+                                        _ps = resolve_paper_trade(_ps, _future_bars)
+                                        st.session_state.paper_log.append(_ps)
+                                        _new_count += 1
+
+                            elif _block_reason.startswith("daily_loss"):
+                                st.error(f"🚫 Daily loss cap hit — auto-trading paused for today. "
+                                         f"(Today's P&L: ₹{_today_pnl:+,.0f} / limit -₹{MAX_DAY_LOSS_INR:,})")
+
+                            # Today's P&L meter
+                            _tdpnl_color = "normal" if _today_pnl >= 0 else "inverse"
+                            st.metric("Today's auto P&L", f"₹{_today_pnl:+,.0f}",
+                                      delta=f"₹{MAX_DAY_LOSS_INR + _today_pnl:,.0f} remaining risk" if _today_pnl < 0 else None,
+                                      delta_color=_tdpnl_color,
+                                      help=f"Auto-trading pauses at -₹{MAX_DAY_LOSS_INR:,}.")
+
+                            if _new_count:
+                                st.success(f"Executed {_new_count} auto trade(s).")
                                 if enable_telegram:
                                     for _sc in _scored:
                                         if _sc["track"] != "auto":
@@ -1860,6 +2043,8 @@ if _t9 is not None:
                                     with _ab:
                                         if not _already_logged:
                                             if st.button(f"✅ Approve {_sig_id}", key=f"approve_{_sig_id}"):
+                                                _man_bal = wallet_balance(st.session_state.paper_log, "manual", INTRADAY_WALLET_INITIAL)
+                                                _man_qty = compute_qty(_sc["entry_px"], _sc["stop_px"], _man_bal, _cr.score)
                                                 _ps = PaperSignal(
                                                     id=_sig_id,
                                                     trade_date=str(_opp_date),
@@ -1874,6 +2059,7 @@ if _t9 is not None:
                                                     or_range_pct=round(_opp_or_range_pct, 3),
                                                     gap_pct=None,
                                                     track="manual",
+                                                    qty=_man_qty,
                                                     approved_by="user",
                                                     approved_at=str(pd.Timestamp.now()),
                                                 )
@@ -1896,60 +2082,81 @@ if _t9 is not None:
                         st.markdown("---")
 
                         # ── Paper trade results ───────────────────────────────────
-                        st.markdown("#### Paper trade results")
+                        st.markdown("#### 📋 Paper trade results")
                         _pt_log = st.session_state.paper_log
                         if not _pt_log:
                             st.info("No paper trades yet. Use the buttons above to execute.")
                         else:
                             _pt_df = paper_log_to_df(_pt_log)
-
-                            # Success metrics comparison
-                            _auto_stats = summarise_track(_pt_df, "auto")
+                            _auto_stats   = summarise_track(_pt_df, "auto")
                             _manual_stats = summarise_track(_pt_df, "manual")
-                            st.markdown("##### Success metrics: Auto vs Manual-approved")
-                            _sm1, _sm2 = st.columns(2)
-                            with _sm1:
-                                st.markdown(
-                                    "<div style='background:#1a3a2a;border:1px solid #26a69a;border-radius:8px;"
-                                    "padding:14px 18px;'><span style='color:#26a69a;font-weight:700;"
-                                    "font-size:0.9rem;'>🤖 AUTO TRACK</span>",
-                                    unsafe_allow_html=True,
+
+                            # ── Wallet balances ───────────────────────────────────
+                            _auto_bal_cur   = wallet_balance(_pt_log, "auto",   INTRADAY_WALLET_INITIAL)
+                            _manual_bal_cur = wallet_balance(_pt_log, "manual", INTRADAY_WALLET_INITIAL)
+                            _now_ist = pd.Timestamp.now(tz="Asia/Kolkata")
+                            _market_closed = _now_ist.time() >= pd.Timestamp("15:30").time()
+
+                            st.markdown("##### 💰 Wallet balances (paper)")
+                            _wb1, _wb2 = st.columns(2)
+                            with _wb1:
+                                _auto_delta = _auto_bal_cur - INTRADAY_WALLET_INITIAL
+                                st.metric(
+                                    "🤖 Auto wallet",
+                                    f"₹{_auto_bal_cur:,.0f}",
+                                    delta=f"₹{_auto_delta:+,.0f}",
+                                    delta_color="normal",
+                                    help=f"Starting capital ₹{INTRADAY_WALLET_INITIAL:,}. Tracks auto-executed trades only. Reloads to ₹{INTRADAY_WALLET_INITIAL:,} if balance hits ₹0.",
                                 )
-                                _sa1, _sa2, _sa3 = st.columns(3)
-                                _sa1.metric("Trades", _auto_stats["trades"])
-                                _sa2.metric("Win rate", f"{_auto_stats['win_rate']:.1%}")
-                                _sa3.metric("Avg R", f"{_auto_stats['avg_r']:.2f}R")
-                                st.metric("Total PnL (pts)", f"{_auto_stats['total_pnl']:+.2f}")
-                                st.markdown("</div>", unsafe_allow_html=True)
-                            with _sm2:
-                                st.markdown(
-                                    "<div style='background:#2a2a1a;border:1px solid #f7c948;border-radius:8px;"
-                                    "padding:14px 18px;'><span style='color:#f7c948;font-weight:700;"
-                                    "font-size:0.9rem;'>👤 MANUAL TRACK</span>",
-                                    unsafe_allow_html=True,
+                                if _market_closed:
+                                    st.caption(f"🔔 Market closed — closing balance: **₹{_auto_bal_cur:,.0f}**")
+                            with _wb2:
+                                _man_delta = _manual_bal_cur - INTRADAY_WALLET_INITIAL
+                                st.metric(
+                                    "👤 Manual wallet",
+                                    f"₹{_manual_bal_cur:,.0f}",
+                                    delta=f"₹{_man_delta:+,.0f}",
+                                    delta_color="normal",
+                                    help=f"Starting capital ₹{INTRADAY_WALLET_INITIAL:,}. Tracks manually-approved trades. Auto-reloads on ₹0.",
                                 )
-                                _mm1, _mm2, _mm3 = st.columns(3)
-                                _mm1.metric("Trades", _manual_stats["trades"])
-                                _mm2.metric("Win rate", f"{_manual_stats['win_rate']:.1%}")
-                                _mm3.metric("Avg R", f"{_manual_stats['avg_r']:.2f}R")
-                                st.metric("Total PnL (pts)", f"{_manual_stats['total_pnl']:+.2f}")
-                                st.markdown("</div>", unsafe_allow_html=True)
+                                if _market_closed:
+                                    st.caption(f"🔔 Market closed — closing balance: **₹{_manual_bal_cur:,.0f}**")
 
                             st.markdown("---")
 
-                            # Resolve open trades with latest 5m data
+                            # ── Summary metrics ───────────────────────────────────
+                            st.markdown("##### Performance summary")
+                            _sm1, _sm2 = st.columns(2)
+                            with _sm1:
+                                st.markdown("<div style='background:#1a3a2a;border:1px solid #26a69a;border-radius:8px;padding:12px 16px;'>"
+                                            "<span style='color:#26a69a;font-weight:700;'>🤖 AUTO</span></div>", unsafe_allow_html=True)
+                                _sa1, _sa2, _sa3, _sa4 = st.columns(4)
+                                _sa1.metric("Trades",   _auto_stats["trades"])
+                                _sa2.metric("Win rate", f"{_auto_stats['win_rate']:.0%}")
+                                _sa3.metric("Total ₹",  f"₹{_auto_stats['total_pnl_inr']:+,.0f}")
+                                _sa4.metric("Avg/trade", f"₹{_auto_stats['avg_pnl_inr']:+,.0f}")
+                            with _sm2:
+                                st.markdown("<div style='background:#2a2a1a;border:1px solid #f7c948;border-radius:8px;padding:12px 16px;'>"
+                                            "<span style='color:#f7c948;font-weight:700;'>👤 MANUAL</span></div>", unsafe_allow_html=True)
+                                _mm1, _mm2, _mm3, _mm4 = st.columns(4)
+                                _mm1.metric("Trades",   _manual_stats["trades"])
+                                _mm2.metric("Win rate", f"{_manual_stats['win_rate']:.0%}")
+                                _mm3.metric("Total ₹",  f"₹{_manual_stats['total_pnl_inr']:+,.0f}")
+                                _mm4.metric("Avg/trade", f"₹{_manual_stats['avg_pnl_inr']:+,.0f}")
+
+                            st.markdown("---")
+
+                            # ── Resolve open trades ───────────────────────────────
                             _open_pt = [t for t in _pt_log if t.status == "open"]
                             if _open_pt:
-                                st.info(f"🟡 {len(_open_pt)} trade(s) are **open** — signal fired today, market bars after entry not yet available. "
-                                        f"Click below after market close (or later today) to resolve them.")
+                                st.info(f"🟡 {len(_open_pt)} trade(s) **open** — market bars after entry not yet available. "
+                                        f"Click to resolve after market close.")
                                 if st.button("🔄 Resolve open trades (fetch latest 5m data)", key="pt_resolve_open"):
                                     with st.spinner("Fetching latest 5m data to resolve open trades…"):
                                         _res_df, _res_src, _res_err = fetch_ohlcv("MOIL.NS", interval="5m", period="1d")
                                     if not _res_df.empty:
                                         _res_df = _res_df.reset_index()
                                         _res_df.columns = [c.lower() for c in _res_df.columns]
-                                        # Normalise to IST then drop tz for naive comparison
-                                        _res_df = localize_to_ist(_res_df) if hasattr(_res_df.index, "tz") and _res_df.index.tz is not None else _res_df
                                         _dt_col = next((c for c in _res_df.columns if "datetime" in c or c == "index"), _res_df.columns[0])
                                         _dts = pd.to_datetime(_res_df[_dt_col])
                                         if _dts.dt.tz is not None:
@@ -1965,43 +2172,61 @@ if _t9 is not None:
                                     else:
                                         st.warning(f"Could not fetch 5m data: {_res_err}. Try again after market close.")
 
-                            # Full log
-                            _disp_cols = [c for c in [
-                                "trade_date", "signal_time", "side", "track",
-                                "confidence_score", "confidence_label",
-                                "entry_price", "stop", "target",
-                                "status", "exit_price", "exit_reason",
-                                "pnl", "r_multiple", "approved_by",
-                            ] if c in _pt_df.columns]
-                            _pt_disp = _pt_df[_disp_cols].copy()
-                            for _c in ["entry_price", "stop", "target", "exit_price"]:
-                                if _c in _pt_disp.columns:
-                                    _pt_disp[_c] = pd.to_numeric(_pt_disp[_c], errors="coerce").map(lambda x: f"₹{x:.2f}" if pd.notna(x) else "—")
-                            if "pnl" in _pt_disp.columns:
-                                _pt_disp["pnl"] = pd.to_numeric(_pt_disp["pnl"], errors="coerce").map(lambda x: f"{x:+.2f}" if pd.notna(x) else "—")
-                            if "r_multiple" in _pt_disp.columns:
-                                _pt_disp["r_multiple"] = pd.to_numeric(_pt_disp["r_multiple"], errors="coerce").map(lambda x: f"{x:+.2f}R" if pd.notna(x) else "—")
-                            if "status" in _pt_disp.columns:
-                                _pt_disp["status"] = _pt_disp["status"].map(lambda s: {
-                                    "open":   "🟡 open (live)",
-                                    "closed": "✅ closed",
-                                    "invalid": "⚠️ invalid",
-                                }.get(str(s), str(s)))
-                            if "exit_reason" in _pt_disp.columns:
-                                _pt_disp["exit_reason"] = _pt_disp["exit_reason"].map(lambda r: {
-                                    "awaiting_market":  "⏳ market still open",
-                                    "stop_hit":         "🛑 stop hit",
-                                    "target_hit":       "🎯 target hit",
-                                    "square_off_15:15": "🔔 sq-off 15:15",
-                                    "eod_square_off":   "🔔 EOD sq-off",
-                                    "zero_risk":        "⚠️ zero risk",
-                                }.get(str(r), str(r)) if pd.notna(r) else "—")
-                            st.dataframe(_pt_disp, use_container_width=True, hide_index=True)
+                            # ── Trade log grouped by date ─────────────────────────
+                            st.markdown("##### Trade log")
+                            _pt_df_disp = _pt_df.copy()
+                            # Format numeric columns
+                            for _c in ["entry_price", "exit_price", "stop", "target"]:
+                                if _c in _pt_df_disp.columns:
+                                    _pt_df_disp[_c] = pd.to_numeric(_pt_df_disp[_c], errors="coerce").map(
+                                        lambda x: f"₹{x:.2f}" if pd.notna(x) else "—")
+                            if "pnl_inr" in _pt_df_disp.columns:
+                                _pt_df_disp["pnl_inr"] = pd.to_numeric(_pt_df_disp["pnl_inr"], errors="coerce").map(
+                                    lambda x: f"₹{x:+,.0f}" if pd.notna(x) else "—")
+                            if "pnl_pts" in _pt_df_disp.columns:
+                                _pt_df_disp["pnl_pts"] = pd.to_numeric(_pt_df_disp["pnl_pts"], errors="coerce").map(
+                                    lambda x: f"{x:+.2f} pts" if pd.notna(x) else "—")
+                            if "r_multiple" in _pt_df_disp.columns:
+                                _pt_df_disp["r_multiple"] = pd.to_numeric(_pt_df_disp["r_multiple"], errors="coerce").map(
+                                    lambda x: f"{x:+.2f}R" if pd.notna(x) else "—")
+                            if "status" in _pt_df_disp.columns:
+                                _pt_df_disp["status"] = _pt_df_disp["status"].map(
+                                    lambda s: {"open": "🟡 open", "closed": "✅ closed", "invalid": "⚠️ invalid"}.get(str(s), str(s)))
+                            if "exit_reason" in _pt_df_disp.columns:
+                                _pt_df_disp["exit_reason"] = _pt_df_disp["exit_reason"].map(
+                                    lambda r: EXIT_LABEL_MAP.get(str(r), str(r)) if pd.notna(r) else "—")
 
+                            # Group by date — show per-trade rows + day summary
+                            _show_cols = [c for c in [
+                                "trade_date", "signal_time", "exit_time", "side", "track",
+                                "qty", "entry_price", "exit_price",
+                                "pnl_pts", "pnl_inr", "r_multiple",
+                                "status", "exit_reason", "confidence_score",
+                            ] if c in _pt_df_disp.columns]
+
+                            for _tdate, _day_grp in _pt_df_disp.groupby("trade_date", sort=False):
+                                _n = len(_day_grp)
+                                _closed_grp = _pt_df[(_pt_df["trade_date"] == _tdate) & (_pt_df["status"] == "closed")]
+                                _day_pnl_inr = pd.to_numeric(_closed_grp["pnl_inr"], errors="coerce").sum() if not _closed_grp.empty and "pnl_inr" in _closed_grp.columns else 0.0
+                                _day_avg_inr = _day_pnl_inr / len(_closed_grp) if len(_closed_grp) > 0 else 0.0
+                                _pnl_color = "#26a69a" if _day_pnl_inr >= 0 else "#ef5350"
+                                st.markdown(
+                                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                                    f"background:#1e2130;border-radius:6px;padding:6px 12px;margin-bottom:4px;'>"
+                                    f"<span style='color:#d1d4dc;font-weight:600;'>📅 {_tdate}</span>"
+                                    f"<span style='color:#868993;font-size:0.85rem;'>{_n} trade{'s' if _n>1 else ''} &nbsp;|&nbsp; "
+                                    f"Day P&L: <span style='color:{_pnl_color};font-weight:700;'>₹{_day_pnl_inr:+,.0f}</span>"
+                                    + (f" &nbsp;|&nbsp; Avg/trade: <span style='color:{_pnl_color};'>₹{_day_avg_inr:+,.0f}</span>" if _n > 1 else "")
+                                    + f"</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+                                st.dataframe(_day_grp[_show_cols], use_container_width=True, hide_index=True)
+
+                            st.markdown("---")
                             _pt_csv = io.StringIO()
                             _pt_df.to_csv(_pt_csv, index=False)
                             _dl1, _dl2 = st.columns([1, 4])
-                            _dl1.download_button("⬇ Paper trade log CSV", _pt_csv.getvalue(), file_name="paper_trades.csv", mime="text/csv")
+                            _dl1.download_button("⬇ Trades CSV", _pt_csv.getvalue(), file_name="paper_trades.csv", mime="text/csv")
                             if _dl2.button("🗑️ Clear paper trade log", key="pt_clear"):
                                 st.session_state.paper_log = []
                                 st.rerun()
@@ -2525,18 +2750,44 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                     _cap_max  = MAX_AUTO_INTRADAY if _trade_type == "intraday" else MAX_AUTO_MARGIN
                     _cap_tag  = f"{_cap_used}/{_cap_max} used today"
 
+                    # MTF guards: sequential + daily loss cap (reuses intraday helpers on mtf_paper_log)
+                    _mtf_blk, _mtf_blk_r = auto_trade_blocked(st.session_state.mtf_paper_log, "auto")
+                    _mtf_today_pnl = today_pnl_inr(st.session_state.mtf_paper_log, "auto")
+
+                    # Probability estimate from MTF paper log history
+                    _mtf_hist_df  = mtf_paper_log_to_df(st.session_state.mtf_paper_log)
+                    _mtf_hist     = summarise_mtf_track(_mtf_hist_df, "auto")
+                    _mtf_hist_wr  = _mtf_hist["win_rate"]
+                    _mtf_hist_n   = _mtf_hist["trades"]
+                    _mtf_conf_prob = _mtf_res["confidence_score"] / 100
+                    _mtf_est_prob  = (_mtf_hist_wr * 0.5 + _mtf_conf_prob * 0.5) if _mtf_hist_n >= 3 else _mtf_conf_prob
+
+                    st.metric("Today's MTF auto P&L", f"₹{_mtf_today_pnl:+,.0f}",
+                              delta=f"₹{MAX_DAY_LOSS_INR + _mtf_today_pnl:,.0f} remaining risk" if _mtf_today_pnl < 0 else None,
+                              help=f"Auto-trading pauses at -₹{MAX_DAY_LOSS_INR:,}.")
+
                     if _dec == "avoid":
                         st.button("🤖 Auto-execute", disabled=True, key="mtf_auto_exec",
                                   help="Confidence too low — engine will not auto-execute this trade.")
                         st.caption("⛔ Auto-execute blocked: confidence < 60")
+                    elif _mtf_blk:
+                        _mtf_blk_msg = {
+                            "open_trade_exists": "⏸️ Waiting for open MTF trade to close.",
+                        }.get(_mtf_blk_r.split(" ")[0], f"🚫 MTF auto-trading paused: {_mtf_blk_r}")
+                        st.button("🤖 Auto-execute", disabled=True, key="mtf_auto_exec")
+                        st.caption(_mtf_blk_msg)
                     elif not _cap_ok:
                         st.button("🤖 Auto-execute", disabled=True, key="mtf_auto_exec",
                                   help=f"Daily cap reached ({_cap_tag}).")
                         st.caption(f"🚫 Daily {_tt_label} cap reached ({_cap_tag})")
                     else:
-                        if st.button(f"🤖 Auto-execute  [{_cap_tag}]", key="mtf_auto_exec",
+                        _mtf_btn_label = (
+                            f"🤖 Auto-execute  [{_cap_tag}]  |  Est. prob {_mtf_est_prob:.0%}"
+                            + (f"  |  Hist W/R {_mtf_hist_wr:.0%} ({_mtf_hist_n}T)" if _mtf_hist_n >= 3 else "")
+                        )
+                        if st.button(_mtf_btn_label, key="mtf_auto_exec",
                                      type="primary",
-                                     help=f"Automatically execute this {_tt_label} trade and send Telegram alert."):
+                                     help=f"Automatically execute this {_tt_label} trade. Blocked if open trade exists or daily loss ≥ ₹10,000."):
                             # Increment cap counter
                             if _trade_type == "intraday":
                                 st.session_state.mtf_auto_intraday_count += 1
@@ -2833,38 +3084,57 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
             else:
                 _pt_df = mtf_paper_log_to_df(_pt_log)
 
+                # Compute pnl_inr = pnl_points × position_size
+                if "pnl_points" in _pt_df.columns and "position_size" in _pt_df.columns:
+                    _pt_df["pnl_inr"] = pd.to_numeric(_pt_df["pnl_points"], errors="coerce") * pd.to_numeric(_pt_df["position_size"], errors="coerce")
+                else:
+                    _pt_df["pnl_inr"] = None
+
+                # ── MTF Wallet balance (₹25L, auto trades only) ──────────────
+                _mtf_auto_pnl   = pd.to_numeric(_pt_df.loc[(_pt_df["track"]=="auto") & (_pt_df["status"]=="closed"), "pnl_inr"], errors="coerce").sum()
+                _mtf_manual_pnl = pd.to_numeric(_pt_df.loc[(_pt_df["track"]=="manual") & (_pt_df["status"]=="closed"), "pnl_inr"], errors="coerce").sum()
+                _mtf_auto_bal   = MTF_WALLET_INITIAL + (_mtf_auto_pnl if pd.notna(_mtf_auto_pnl) else 0)
+                _mtf_manual_bal = MTF_WALLET_INITIAL + (_mtf_manual_pnl if pd.notna(_mtf_manual_pnl) else 0)
+                _now_ist_mtf    = pd.Timestamp.now(tz="Asia/Kolkata")
+                _mtf_mkt_closed = _now_ist_mtf.time() >= pd.Timestamp("15:30").time()
+
+                st.markdown("##### 💰 MTF Wallet balances (paper — ₹25L starting)")
+                _mwb1, _mwb2 = st.columns(2)
+                with _mwb1:
+                    st.metric("🤖 Auto MTF wallet", f"₹{_mtf_auto_bal:,.0f}",
+                              delta=f"₹{_mtf_auto_bal - MTF_WALLET_INITIAL:+,.0f}",
+                              help=f"Starting ₹{MTF_WALLET_INITIAL:,}. Tracks auto-executed MTF trades. pnl_inr = price_pts × shares.")
+                    if _mtf_mkt_closed:
+                        st.caption(f"🔔 Closing balance: **₹{_mtf_auto_bal:,.0f}**")
+                with _mwb2:
+                    st.metric("👤 Manual MTF wallet", f"₹{_mtf_manual_bal:,.0f}",
+                              delta=f"₹{_mtf_manual_bal - MTF_WALLET_INITIAL:+,.0f}",
+                              help=f"Starting ₹{MTF_WALLET_INITIAL:,}. Tracks manually-added MTF trades.")
+                    if _mtf_mkt_closed:
+                        st.caption(f"🔔 Closing balance: **₹{_mtf_manual_bal:,.0f}**")
+
+                st.markdown("---")
+
                 # ── Summary metrics ───────────────────────────────────────────
                 _pa_auto   = summarise_mtf_track(_pt_df, "auto")
                 _pa_manual = summarise_mtf_track(_pt_df, "manual")
                 _ps1, _ps2 = st.columns(2)
                 with _ps1:
-                    st.markdown(
-                        "<div style='background:#1a3a2a;border:1px solid #26a69a;"
-                        "border-radius:8px;padding:14px 18px;'>"
-                        "<span style='color:#26a69a;font-weight:700;font-size:0.9rem;'>🤖 AUTO TRACK</span>",
-                        unsafe_allow_html=True,
-                    )
-                    _pa1, _pa2, _pa3 = st.columns(3)
+                    st.markdown("<div style='background:#1a3a2a;border:1px solid #26a69a;border-radius:8px;padding:12px 16px;'>"
+                                "<span style='color:#26a69a;font-weight:700;'>🤖 AUTO</span></div>", unsafe_allow_html=True)
+                    _pa1, _pa2, _pa3, _pa4 = st.columns(4)
                     _pa1.metric("Trades",    _pa_auto["trades"])
-                    _pa2.metric("Win rate",  f"{_pa_auto['win_rate']:.1%}")
-                    _pa3.metric("Avg R",     f"{_pa_auto['avg_r']:.2f}R")
-                    st.metric("Total PnL (pts)", f"{_pa_auto['total_pnl']:+.2f}")
-                    st.metric("Avg Confidence",  f"{_pa_auto['avg_conf']:.1f}")
-                    st.markdown("</div>", unsafe_allow_html=True)
+                    _pa2.metric("Win rate",  f"{_pa_auto['win_rate']:.0%}")
+                    _pa3.metric("Total ₹",   f"₹{_mtf_auto_pnl:+,.0f}" if pd.notna(_mtf_auto_pnl) else "—")
+                    _pa4.metric("Avg R",     f"{_pa_auto['avg_r']:.2f}R")
                 with _ps2:
-                    st.markdown(
-                        "<div style='background:#2a2a1a;border:1px solid #f7c948;"
-                        "border-radius:8px;padding:14px 18px;'>"
-                        "<span style='color:#f7c948;font-weight:700;font-size:0.9rem;'>👤 MANUAL TRACK</span>",
-                        unsafe_allow_html=True,
-                    )
-                    _pm1, _pm2, _pm3 = st.columns(3)
+                    st.markdown("<div style='background:#2a2a1a;border:1px solid #f7c948;border-radius:8px;padding:12px 16px;'>"
+                                "<span style='color:#f7c948;font-weight:700;'>👤 MANUAL</span></div>", unsafe_allow_html=True)
+                    _pm1, _pm2, _pm3, _pm4 = st.columns(4)
                     _pm1.metric("Trades",    _pa_manual["trades"])
-                    _pm2.metric("Win rate",  f"{_pa_manual['win_rate']:.1%}")
-                    _pm3.metric("Avg R",     f"{_pa_manual['avg_r']:.2f}R")
-                    st.metric("Total PnL (pts)", f"{_pa_manual['total_pnl']:+.2f}")
-                    st.metric("Avg Confidence",  f"{_pa_manual['avg_conf']:.1f}")
-                    st.markdown("</div>", unsafe_allow_html=True)
+                    _pm2.metric("Win rate",  f"{_pa_manual['win_rate']:.0%}")
+                    _pm3.metric("Total ₹",   f"₹{_mtf_manual_pnl:+,.0f}" if pd.notna(_mtf_manual_pnl) else "—")
+                    _pm4.metric("Avg R",     f"{_pa_manual['avg_r']:.2f}R")
 
                 st.markdown("---")
 
@@ -2874,7 +3144,7 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                     "decision", "leverage", "entry", "stop", "target1", "target2",
                     "position_size", "track", "status",
                     "exit_price_t1", "exit_price_t2", "exit_price_sl",
-                    "exit_reason", "pnl_points", "r_multiple",
+                    "exit_reason", "pnl_points", "pnl_inr", "r_multiple",
                 ] if c in _pt_df.columns]
                 _pt_disp = _pt_df[_disp_pt_cols].copy()
                 for _fc in ["entry", "stop", "target1", "target2", "exit_price_t1", "exit_price_t2", "exit_price_sl"]:
@@ -2883,7 +3153,10 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                             lambda x: f"₹{x:.2f}" if pd.notna(x) else "—")
                 if "pnl_points" in _pt_disp.columns:
                     _pt_disp["pnl_points"] = pd.to_numeric(_pt_disp["pnl_points"], errors="coerce").map(
-                        lambda x: f"{x:+.2f}" if pd.notna(x) else "—")
+                        lambda x: f"{x:+.2f} pts" if pd.notna(x) else "—")
+                if "pnl_inr" in _pt_disp.columns:
+                    _pt_disp["pnl_inr"] = pd.to_numeric(_pt_disp["pnl_inr"], errors="coerce").map(
+                        lambda x: f"₹{x:+,.0f}" if pd.notna(x) else "—")
                 if "r_multiple" in _pt_disp.columns:
                     _pt_disp["r_multiple"] = pd.to_numeric(_pt_disp["r_multiple"], errors="coerce").map(
                         lambda x: f"{x:+.2f}R" if pd.notna(x) else "—")
@@ -3593,6 +3866,690 @@ if _t_ev is not None:
                                        file_name="moil_mtf_evidence.csv",
                                        mime="text/csv",
                                        key="ev_mtf_csv")
+
+# ════════════════════════════════════════════════════════════════════════════
+# STRATEGY LAB TAB
+# ════════════════════════════════════════════════════════════════════════════
+_t_lab = _tab("🧪 Strategy Lab")
+if _t_lab is not None:
+    with _t_lab:
+        st.subheader("🧪 Strategy Lab — Learning & Optimisation Engine")
+        st.caption(
+            "Analyses your paper trade history to suggest improvements to thresholds, "
+            "position sizing, and exit logic. The agent learns from every trade."
+        )
+
+        _all_log = list(st.session_state.get("paper_log", [])) + list(st.session_state.get("mtf_paper_log", []))
+        _pt_all_df = paper_log_to_df(st.session_state.get("paper_log", []))
+        _closed_all = _pt_all_df[_pt_all_df["status"] == "closed"].copy() if not _pt_all_df.empty else pd.DataFrame()
+        _report_suggestions: list = []  # populated by agent tab, used by report builder
+
+        if _closed_all.empty:
+            st.info("💬 No closed trades yet. Execute some paper trades first — the lab analyses your trade history.")
+        else:
+            _lab_a, _lab_b, _lab_c, _lab_d = st.tabs([
+                "📊 Exit Analytics",
+                "🔬 Probability Calibration",
+                "🎯 Threshold Tuner",
+                "🤖 Agent Suggestions",
+            ])
+
+            # ── 1. EXIT ANALYTICS ─────────────────────────────────────────────
+            with _lab_a:
+                st.markdown("#### Why did trades close?")
+                _exit_counts = _closed_all["exit_reason"].value_counts().reset_index()
+                _exit_counts.columns = ["exit_reason", "count"]
+
+                _pnl_col = "pnl_inr" if "pnl_inr" in _closed_all.columns else "pnl_pts"
+                _exit_pnl = _closed_all.groupby("exit_reason")[_pnl_col].agg(["sum", "mean", "count"]).reset_index()
+                _exit_pnl.columns = ["exit_reason", "total_inr", "avg_inr", "trades"]
+                # B4: explicit merge to avoid .values misalignment
+                _wr_series = _closed_all.groupby("exit_reason").apply(
+                    lambda g: (pd.to_numeric(g[_pnl_col], errors="coerce") > 0).mean()
+                ).rename("win_rate").reset_index()
+                _exit_pnl = _exit_pnl.merge(_wr_series, on="exit_reason", how="left")
+                _exit_pnl["exit_label"] = _exit_pnl["exit_reason"].map(lambda r: EXIT_LABEL_MAP.get(str(r), str(r)))
+                _exit_pnl["total_inr"]  = _exit_pnl["total_inr"].map(lambda x: f"₹{x:+,.0f}")
+                _exit_pnl["avg_inr"]    = _exit_pnl["avg_inr"].map(lambda x: f"₹{x:+,.0f}")
+                _exit_pnl["win_rate"]   = _exit_pnl["win_rate"].map(lambda x: f"{x:.0%}")
+                st.dataframe(_exit_pnl[["exit_label", "trades", "win_rate", "avg_inr", "total_inr"]],
+                             use_container_width=True, hide_index=True)
+
+                st.markdown("#### P&L by confidence band")
+                if "confidence_score" in _closed_all.columns:
+                    _closed_all["conf_band"] = pd.cut(
+                        pd.to_numeric(_closed_all["confidence_score"], errors="coerce"),
+                        bins=[0, 70, 75, 80, 85, 90, 95, 101],
+                        labels=["<70", "70-74", "75-79", "80-84", "85-89", "90-94", "95+"],
+                        right=False,
+                    )
+                    _band_stats = _closed_all.groupby("conf_band", observed=True).apply(
+                        lambda g: pd.Series({
+                            "trades":    len(g),
+                            "win_rate":  f"{(pd.to_numeric(g[_pnl_col], errors='coerce') > 0).mean():.0%}",
+                            "avg_pnl":   f"₹{pd.to_numeric(g[_pnl_col], errors='coerce').mean():+,.0f}",
+                            "total_pnl": f"₹{pd.to_numeric(g[_pnl_col], errors='coerce').sum():+,.0f}",
+                        })
+                    ).reset_index()
+                    st.dataframe(_band_stats, use_container_width=True, hide_index=True)
+
+            # ── 2. PROBABILITY CALIBRATION ────────────────────────────────────
+            with _lab_b:
+                st.markdown("#### Predicted probability vs actual outcome")
+                st.info(
+                    "Calibration shows whether the probability engine is over- or under-confident. "
+                    "Trades closed by stop/target/sq-off are used as ground truth.\n\n"
+                    "Actual win = target hit, early profit, OR square-off with positive P&L (B8). "
+                    "Actual loss = stop hit or prob-stop close."
+                )
+
+                # B8: include profitable sq-off trades in actual_win
+                _sqoff_mask = _closed_all["exit_reason"].isin(["square_off_15:15", "eod_square_off"])
+                _sqoff_profit = _sqoff_mask & (pd.to_numeric(_closed_all[_pnl_col], errors="coerce") > 0)
+                _closed_all["actual_win"] = (
+                    _closed_all["exit_reason"].isin(["target_hit", "early_profit_5pct"]) | _sqoff_profit
+                )
+                _closed_all["actual_loss"] = _closed_all["exit_reason"].isin(
+                    ["stop_hit", "prob_stop_high"]
+                )
+
+                _win_rate_actual  = _closed_all["actual_win"].mean()
+                _loss_rate_actual = _closed_all["actual_loss"].mean()
+                _stop_sq_rate     = _closed_all["exit_reason"].isin(["square_off_15:15", "eod_square_off"]).mean()
+
+                _cal1, _cal2, _cal3 = st.columns(3)
+                _cal1.metric("Target hit rate",  f"{_win_rate_actual:.1%}",
+                             help="Fraction of closed trades that hit target or booked early +5%.")
+                _cal2.metric("Stop hit rate",    f"{_loss_rate_actual:.1%}",
+                             help="Fraction of closed trades that hit stop loss.")
+                _cal3.metric("Sq-off rate",       f"{_stop_sq_rate:.1%}",
+                             help="Fraction closed by 15:15 / EOD square-off.")
+
+                st.markdown("#### Probability engine calibration guide")
+                # B7: bin by 5-point ranges instead of individual scores
+                if "confidence_score" in _closed_all.columns:
+                    _cal_bins   = list(range(55, 106, 5))
+                    _cal_labels = [f"{b}–{b+4}" for b in _cal_bins[:-1]]
+                    _closed_all["conf_bin"] = pd.cut(
+                        pd.to_numeric(_closed_all["confidence_score"], errors="coerce"),
+                        bins=_cal_bins, labels=_cal_labels, right=False,
+                    )
+                    _cal_grp = _closed_all.groupby("conf_bin", observed=True).agg(
+                        trades     =("actual_win", "count"),
+                        actual_wr  =("actual_win", "mean"),
+                        mid_score  =("confidence_score", "median"),
+                    ).reset_index()
+                    _cal_grp = _cal_grp[_cal_grp["trades"] > 0].copy()
+                    _cal_grp["expected_prob"]    = (_cal_grp["mid_score"] / 100)
+                    _cal_grp["calibration_error"]= (_cal_grp["actual_wr"] - _cal_grp["expected_prob"]).map(lambda x: f"{x:+.2%}")
+                    _cal_grp["reliable"]         = _cal_grp["trades"].apply(lambda n: "✅" if n >= 5 else "⚠️ <5 trades")
+                    _cal_grp["actual_wr"]         = _cal_grp["actual_wr"].map(lambda x: f"{x:.0%}")
+                    _cal_grp["expected_prob"]     = _cal_grp["expected_prob"].map(lambda x: f"{x:.0%}")
+                    st.dataframe(_cal_grp[["conf_bin","trades","actual_wr","expected_prob",
+                                          "calibration_error","reliable"]],
+                                 use_container_width=True, hide_index=True)
+                    st.caption(
+                        "Calibration error = actual − expected. Positive = under-confident. "
+                        "Negative = over-confident. ⚠️ Bins with <5 trades are statistically unreliable."
+                    )
+
+                # B6: wallet reload stats — survivorship bias indicator
+                st.markdown("#### Wallet reload events (survivorship bias indicator)")
+                _wal_stats_auto = wallet_balance(
+                    st.session_state.get("paper_log", []), "auto",
+                    INTRADAY_WALLET_INITIAL, return_stats=True
+                )
+                _wal_stats_man = wallet_balance(
+                    st.session_state.get("paper_log", []), "manual",
+                    INTRADAY_WALLET_INITIAL, return_stats=True
+                )
+                _wr1, _wr2 = st.columns(2)
+                _wr1.metric("Auto reloads", _wal_stats_auto["reload_count"],
+                            help="Each reload = wallet hit zero. Real capital would be gone.")
+                _wr1.metric("Auto capital injected", f"₹{_wal_stats_auto['capital_injected']:,.0f}",
+                            help="Total paper-only top-up. Inflates performance if non-zero.")
+                _wr2.metric("Manual reloads", _wal_stats_man["reload_count"])
+                _wr2.metric("Manual capital injected", f"₹{_wal_stats_man['capital_injected']:,.0f}")
+                if _wal_stats_auto["reload_count"] > 0 or _wal_stats_man["reload_count"] > 0:
+                    st.warning(
+                        "⚠️ Wallet was reloaded. Performance stats are **survivorship-biased** — "
+                        "real trading would have stopped at zero. Treat win-rate with caution."
+                    )
+
+            # ── 3. THRESHOLD TUNER ───────────────────────────────────────────
+            with _lab_c:
+                st.markdown("#### Data-driven threshold suggestions")
+
+                if "confidence_score" in _closed_all.columns and len(_closed_all) >= 5:
+                    _scores = pd.to_numeric(_closed_all["confidence_score"], errors="coerce")
+                    _pnls   = pd.to_numeric(_closed_all[_pnl_col], errors="coerce")
+
+                    # B2: threshold sweep with min-sample reliability warning
+                    _thresh_sweep = []
+                    for _thresh in range(55, 96, 5):
+                        _sub = _closed_all[_scores >= _thresh]
+                        if len(_sub) == 0:
+                            continue
+                        _wr  = (pd.to_numeric(_sub[_pnl_col], errors="coerce") > 0).mean()
+                        _avg = pd.to_numeric(_sub[_pnl_col], errors="coerce").mean()
+                        _n   = len(_sub)
+                        _thresh_sweep.append({
+                            "min_score": _thresh, "trades": _n,
+                            "win_rate":  f"{_wr:.0%}",
+                            "avg_pnl":   f"₹{_avg:+,.0f}",
+                            "reliable":  "✅" if _n >= 20 else f"⚠️ n={_n} (<20)",
+                        })
+                    if _thresh_sweep:
+                        _tsdf = pd.DataFrame(_thresh_sweep)
+                        st.dataframe(_tsdf, use_container_width=True, hide_index=True)
+                        st.caption(
+                            f"Current AUTO threshold: **{AUTO_TRADE_THRESHOLD}**. "
+                            "⚠️ Rows with n<20 are in-sample estimates and likely overfit — "
+                            "validate on out-of-sample dates before applying."
+                        )
+
+                    st.markdown("#### Risk band performance (max-loss budget vs actual outcome)")
+                    _rb_rows = []
+                    for _lo, _hi, _v_lo, _v_hi in [
+                        (70, 75, 5000, 5000), (75, 80, 5000, 5500), (80, 85, 5500, 6000),
+                        (85, 90, 6000, 6500), (90, 95, 6500, 7500), (95, 101, 7500, 10000),
+                    ]:
+                        _band_sub = _closed_all[(_scores >= _lo) & (_scores < _hi)]
+                        if _band_sub.empty:
+                            continue
+                        _bpnl = pd.to_numeric(_band_sub[_pnl_col], errors="coerce")
+                        _rb_rows.append({
+                            "band": f"{_lo}–{_hi}",
+                            "budget": f"₹{_v_lo:,}–₹{_v_hi:,}",
+                            "trades": len(_band_sub),
+                            "win_rate": f"{(_bpnl > 0).mean():.0%}",
+                            "avg_pnl": f"₹{_bpnl.mean():+,.0f}",
+                            "total_pnl": f"₹{_bpnl.sum():+,.0f}",
+                        })
+                    if _rb_rows:
+                        st.dataframe(pd.DataFrame(_rb_rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("Need at least 5 closed trades to generate threshold suggestions.")
+
+            # ── 4. AGENT SUGGESTIONS ──────────────────────────────────────────
+            with _lab_d:
+                st.markdown("#### 🤖 Learning Agent — Ranked Improvement Suggestions")
+                st.caption(
+                    "Rule-based agent analyses your trade log and outputs ranked, "
+                    "actionable suggestions. Higher priority = bigger expected impact on win rate."
+                )
+
+                _suggestions = []
+
+                if len(_closed_all) >= 3:
+                    _pnls_num   = pd.to_numeric(_closed_all[_pnl_col], errors="coerce")
+                    # B10: safe column check instead of DataFrame.get()
+                    _scores_num = pd.to_numeric(
+                        _closed_all["confidence_score"] if "confidence_score" in _closed_all.columns
+                        else pd.Series(dtype=float), errors="coerce"
+                    )
+                    _actual_wr = (_pnls_num > 0).mean()
+
+                    # Rule 1: raise auto threshold if win rate below 55%
+                    if _actual_wr < 0.55 and len(_closed_all) >= 5:
+                        _best_thresh = AUTO_TRADE_THRESHOLD
+                        for _t in range(AUTO_TRADE_THRESHOLD + 5, 91, 5):
+                            _sub = _closed_all[_scores_num >= _t]
+                            if len(_sub) >= 3 and (pd.to_numeric(_sub[_pnl_col], errors="coerce") > 0).mean() > _actual_wr + 0.1:
+                                _best_thresh = _t
+                                break
+                        if _best_thresh > AUTO_TRADE_THRESHOLD:
+                            _suggestions.append({
+                                "priority": "🔴 High",
+                                "area": "Auto threshold",
+                                "finding": f"Win rate {_actual_wr:.0%} < 55%. Raising threshold from "
+                                           f"{AUTO_TRADE_THRESHOLD} → {_best_thresh} improves quality.",
+                                "action": f"Set AUTO_TRADE_THRESHOLD = {_best_thresh} in confidence.py",
+                            })
+
+                    # Rule 2: sq-off rate > 40% — exits are too late
+                    _sqoff_rate = _closed_all["exit_reason"].isin(
+                        ["square_off_15:15", "eod_square_off"]).mean()
+                    if _sqoff_rate > 0.40:
+                        _suggestions.append({
+                            "priority": "🟠 Medium",
+                            "area": "Exit timing",
+                            "finding": f"{_sqoff_rate:.0%} of trades close at sq-off, not at target/stop. "
+                                       "Targets may be too wide.",
+                            "action": "Reduce risk-reward target multiplier or tighten R:R ratio in strategy settings.",
+                        })
+
+                    # Rule 3: stop hit rate > 50% — stops too tight or entries too aggressive
+                    _stop_rate = _closed_all["exit_reason"].isin(["stop_hit", "prob_stop_high"]).mean()
+                    if _stop_rate > 0.50:
+                        _suggestions.append({
+                            "priority": "🔴 High",
+                            "area": "Stop placement",
+                            "finding": f"{_stop_rate:.0%} of trades stopped out. Stops may be too tight for MOIL’s ATR.",
+                            "action": "Increase ATR multiplier for stop-loss (e.g. 1.5× → 2.0× ATR) or require higher volume confirmation.",
+                        })
+
+                    # Rule 4: prob logic is ON but early auto-closes show poor P&L
+                    _prob_exits = _closed_all[_closed_all["exit_reason"].isin(
+                        ["prob_target_low", "prob_stop_high"])]
+                    if len(_prob_exits) >= 3:
+                        _prob_avg = pd.to_numeric(_prob_exits[_pnl_col], errors="coerce").mean()
+                        if _prob_avg < 0:
+                            _suggestions.append({
+                                "priority": "🟠 Medium",
+                                "area": "Probability engine",
+                                "finding": f"Prob-based exits average ₹{_prob_avg:+,.0f} — below zero. "
+                                           "Engine may be closing prematurely.",
+                                "action": "Tighten thresholds: raise target-close from prob<50% → prob<40%, "
+                                          "or turn OFF probability auto-close to observe natural trade outcomes.",
+                            })
+                        else:
+                            _suggestions.append({
+                                "priority": "🟢 Low",
+                                "area": "Probability engine",
+                                "finding": f"Prob-based exits are working: avg ₹{_prob_avg:+,.0f}. Calibration is reasonable.",
+                                "action": "No change needed. Consider gradually tightening stop-prob threshold from 75% → 70%.",
+                            })
+
+                    # Rule 5: early profit exits are positive — consider lowering threshold
+                    _early = _closed_all[_closed_all["exit_reason"] == "early_profit_5pct"]
+                    if len(_early) >= 2:
+                        _early_avg = pd.to_numeric(_early[_pnl_col], errors="coerce").mean()
+                        _suggestions.append({
+                            "priority": "🟢 Low",
+                            "area": "Early profit booking",
+                            "finding": f"{len(_early)} early +5% exits, avg ₹{_early_avg:+,.0f}. Rule is firing.",
+                            "action": "If avg is strong, consider lowering threshold to +3% to capture more "
+                                      "quick momentum moves on MOIL.",
+                        })
+
+                    # Rule 6: confidence band with worst avg P&L
+                    if "confidence_score" in _closed_all.columns and len(_closed_all) >= 8:
+                        _band_avg = _closed_all.groupby(
+                            pd.cut(pd.to_numeric(_closed_all["confidence_score"], errors="coerce"),
+                                   bins=[0, 70, 75, 80, 85, 90, 101],
+                                   labels=["<70","70-74","75-79","80-84","85-89","90+"],
+                                   right=False), observed=True
+                        )[_pnl_col].mean()
+                        _worst_band = _band_avg.idxmin()
+                        _worst_avg  = _band_avg.min()
+                        if pd.notna(_worst_avg) and _worst_avg < 0:
+                            _suggestions.append({
+                                "priority": "🟠 Medium",
+                                "area": "Confidence band sizing",
+                                "finding": f"Band {_worst_band} has worst avg P&L: ₹{_worst_avg:+,.0f}. "
+                                           "Risk budget may be too high for this band.",
+                                "action": f"Reduce max-loss budget for confidence band {_worst_band} "
+                                          "in the _CONF_LOSS_BANDS table in paper_trading.py.",
+                            })
+
+                _report_suggestions = list(_suggestions)  # expose to report builder
+
+                if not _suggestions:
+                    st.success("✅ Agent found no significant issues. Keep trading — more data = better suggestions.")
+                else:
+                    for _i, _sug in enumerate(_suggestions, 1):
+                        _sug_color = {
+                            "🔴 High":   "#ef5350",
+                            "🟠 Medium": "#ffa726",
+                            "🟢 Low":    "#26a69a",
+                        }.get(_sug["priority"], "#868993")
+                        st.markdown(
+                            f"<div style='background:#1e2130;border-left:4px solid {_sug_color};"
+                            f"border-radius:0 6px 6px 0;padding:10px 16px;margin-bottom:10px;'>"
+                            f"<span style='color:{_sug_color};font-weight:700;font-size:0.85rem;'>"
+                            f"{_sug['priority']} &nbsp;▪▪▪ &nbsp; {_sug['area']}</span><br>"
+                            f"<span style='color:#d1d4dc;'>🔍 {_sug['finding']}</span><br>"
+                            f"<span style='color:#868993;font-size:0.85rem;'>→ {_sug['action']}</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    st.markdown("---")
+                    st.markdown("##### Apply a suggestion")
+                    st.info(
+                        "💡 Suggestions above are advisory. To apply: edit the constants in "
+                        "`intraday_vwap_orb/confidence.py` (threshold) or "
+                        "`intraday_vwap_orb/paper_trading.py` (_CONF_LOSS_BANDS, early profit %) "
+                        "and re-run backtest to validate before using in live paper trading."
+                    )
+
+                    # Download full analysis
+                    _sug_df = pd.DataFrame(_suggestions)
+                    _sug_buf = _sug_df.to_csv(index=False)
+                    st.download_button("⬇ Download suggestions CSV", _sug_buf,
+                                       file_name="strategy_lab_suggestions.csv", mime="text/csv")
+
+        # ── Research Report Download (always visible, outside the empty-check) ──
+        st.markdown("---")
+        st.markdown("### 📄 Download Research Report")
+        st.caption(
+            "Generates a DOCX document covering bias identification, fixes applied, "
+            "probability calibration status, and strategy optimisation recommendations. "
+            "Saved locally — **not committed to GitHub**."
+        )
+
+        def _build_bias_report_docx(closed_df: pd.DataFrame, suggestions: list) -> bytes:
+            """Build the bias-handling research report as a DOCX, return bytes."""
+            try:
+                from docx import Document
+                from docx.shared import Pt, RGBColor, Inches
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+                import io, datetime
+
+                doc = Document()
+
+                # ── Styles ──────────────────────────────────────────────────
+                _style = doc.styles["Normal"]
+                _style.font.name = "Calibri"
+                _style.font.size = Pt(11)
+
+                def _h1(text):
+                    p = doc.add_heading(text, level=1)
+                    p.runs[0].font.color.rgb = RGBColor(0x1a, 0x73, 0xe8)
+                    return p
+
+                def _h2(text):
+                    return doc.add_heading(text, level=2)
+
+                def _h3(text):
+                    return doc.add_heading(text, level=3)
+
+                def _para(text, bold=False, italic=False, colour=None):
+                    p = doc.add_paragraph()
+                    run = p.add_run(text)
+                    run.bold = bold
+                    run.italic = italic
+                    if colour:
+                        run.font.color.rgb = colour
+                    return p
+
+                def _bullet(text):
+                    doc.add_paragraph(text, style="List Bullet")
+
+                def _code(text):
+                    p = doc.add_paragraph()
+                    run = p.add_run(text)
+                    run.font.name = "Courier New"
+                    run.font.size = Pt(9)
+                    run.font.color.rgb = RGBColor(0xc7, 0x25, 0x4e)
+                    p.paragraph_format.left_indent = Inches(0.4)
+                    return p
+
+                # ── Title page ──────────────────────────────────────────────
+                title = doc.add_heading(
+                    "Statistical Bias Handling in a Rule-Based ML Trading Engine", 0
+                )
+                title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                doc.add_paragraph(
+                    f"MOIL Intraday & MTF Paper Trading System\n"
+                    f"Generated: {datetime.datetime.now().strftime('%d %b %Y, %H:%M IST')}",
+                ).alignment = WD_ALIGN_PARAGRAPH.CENTER
+                doc.add_page_break()
+
+                # ── Abstract ────────────────────────────────────────────────
+                _h1("Abstract")
+                _para(
+                    "This report catalogues ten statistical biases and implementation loopholes "
+                    "identified in the MOIL trading engine's paper trading, probability estimation, "
+                    "and analytics layers. For each bias we state its root cause, effect on measured "
+                    "performance, the fix applied, and residual risk. The document serves as a "
+                    "reference for anyone extending or evaluating this system as an ML decision "
+                    "engine for equity trading."
+                )
+
+                # ── Bias table ───────────────────────────────────────────────
+                _h1("Bias Catalogue — Summary Table")
+                _biases = [
+                    ("B1", "Look-ahead bias (same-bar stop/target)", "paper_trading.py", "Critical", "Open-proximity rule for same-bar resolution"),
+                    ("B2", "In-sample threshold optimisation", "app.py", "High", "Min n=20 warning on threshold sweep"),
+                    ("B3", "Unnormalised probability scores", "paper_trading.py", "Critical", "Softmax-normalise so target+stop prob sum to 1"),
+                    ("B4", "Groupby .values misalignment", "app.py", "High", "Merge on key instead of positional .values"),
+                    ("B5", "Early-profit exit ordering", "paper_trading.py", "Medium", "Early-profit checked before target with guard"),
+                    ("B6", "Survivorship via wallet reload", "paper_trading.py / app.py", "Medium", "Track reloads; surface warning in Strategy Lab"),
+                    ("B7", "Calibration with individual score bins", "app.py", "Medium", "5-point bins with reliability flag per bin"),
+                    ("B8", "Incomplete win definition", "app.py", "Medium", "Profitable sq-off exits counted as wins"),
+                    ("B9", "Guard order hides force-close", "app.py", "Low", "Open-trade check takes priority in UI"),
+                    ("B10", "DataFrame.get() API misuse", "app.py", "Low", "Safe column-existence check"),
+                ]
+                tbl = doc.add_table(rows=1, cols=5)
+                tbl.style = "Table Grid"
+                hdr = tbl.rows[0].cells
+                for i, h in enumerate(["ID", "Bias", "File", "Severity", "Fix"]):
+                    hdr[i].text = h
+                    hdr[i].paragraphs[0].runs[0].bold = True
+                for row_data in _biases:
+                    row = tbl.add_row().cells
+                    for i, val in enumerate(row_data):
+                        row[i].text = val
+
+                doc.add_paragraph()
+
+                # ── Detailed sections ────────────────────────────────────────
+                _h1("Detailed Bias Analysis")
+
+                _bias_detail = [
+                    (
+                        "B1 — Look-Ahead Bias: Same-Bar Stop/Target Conflict",
+                        "paper_trading.py → resolve_paper_trade()",
+                        "OHLC bars compress price action into 4 values. When both stop and target "
+                        "fall within a bar's [Low, High], the original code always assumed stop was "
+                        "hit first — a systematic downward bias on win rate.",
+                        "if _stop_touched and _target_touched:\n"
+                        "    if abs(open - stop) <= abs(open - target):\n"
+                        "        exit at stop\n    else: exit at target",
+                        "OHLC simulation approximation persists. True resolution requires tick data.",
+                    ),
+                    (
+                        "B2 — In-Sample Threshold Optimisation (Selection Bias)",
+                        "app.py → Strategy Lab, Threshold Tuner",
+                        "Sweeping thresholds on the same data that generated the trades produces "
+                        "overfitted suggestions. Trades at score ≥80 are not a random sample — "
+                        "they were selected by the same market conditions.",
+                        "Added reliable column: ✅ n≥20, ⚠️ n<20. Caption warns about overfitting.",
+                        "Walk-forward validation (train/test date split) not yet implemented.",
+                    ),
+                    (
+                        "B3 — Unnormalised Probability Scores",
+                        "paper_trading.py → live_trade_probability()",
+                        "target_prob and stop_prob were computed independently and could both be "
+                        "0.47 for an equidistant trade — neither threshold would fire. They were "
+                        "not true probabilities.",
+                        "_total = raw_target + raw_stop\n"
+                        "target_prob = raw_target / _total\n"
+                        "stop_prob = raw_stop / _total\n"
+                        "# re-normalise after clamping to [0.05, 0.95]",
+                        "Still a heuristic model. Calibration via Strategy Lab needed over time.",
+                    ),
+                    (
+                        "B4 — Groupby .values Alignment Error",
+                        "app.py → Exit Analytics tab",
+                        "win_rate was assigned from groupby result using .values, stripping the "
+                        "index. Different sort orders between groupby and agg silently misassigned "
+                        "win rates to wrong exit reasons.",
+                        "_wr_series = groupby(...).rename('win_rate').reset_index()\n"
+                        "_exit_pnl = _exit_pnl.merge(_wr_series, on='exit_reason')",
+                        "None — explicit key-based merge is always correct.",
+                    ),
+                    (
+                        "B5 — Exit Priority Misclassifies Early-Profit Trades",
+                        "paper_trading.py → resolve_paper_trade()",
+                        "Early-profit check was after target check. Any bar touching both target "
+                        "and +5% always exited as target_hit, making early_profit_5pct appear "
+                        "to fire rarely.",
+                        "Early-profit moved before target check with guard:\n"
+                        "if bars<=15 and profit>=5% and not _target_touched: early exit",
+                        "None.",
+                    ),
+                    (
+                        "B6 — Survivorship Bias via Wallet Auto-Reload",
+                        "paper_trading.py → wallet_balance()",
+                        "Wallet reloaded silently to ₹1L when balance hit zero. Blowup streaks "
+                        "looked solvent in paper trading.",
+                        "wallet_balance(return_stats=True) returns reload_count and "
+                        "capital_injected. Strategy Lab shows warning when reloads > 0.",
+                        "Reload still happens for paper trading continuity. Disable for rigorous backtest.",
+                    ),
+                    (
+                        "B7 — Calibration Binned by Individual Score",
+                        "app.py → Probability Calibration tab",
+                        "Grouping by exact score with few trades produces 1-trade bins showing "
+                        "0% or 100% win rate — statistically meaningless but visually authoritative.",
+                        "5-point bins (55–59, 60–64…). Each bin shows reliable flag: ✅ n≥5.",
+                        "5 trades per bin is still a small sample; aim for 20+ before acting.",
+                    ),
+                    (
+                        "B8 — Incomplete Win Definition",
+                        "app.py → Probability Calibration tab",
+                        "actual_win only counted target_hit and early_profit_5pct. Profitable "
+                        "square-off exits were unclassified, causing win + loss rates to not sum "
+                        "to 1 and calibration error to be understated.",
+                        "actual_win now includes sq-off exits with positive P&L:\n"
+                        "actual_win = (target_hit | early_profit) | (sqoff & pnl > 0)",
+                        "None.",
+                    ),
+                    (
+                        "B9 — Guard Order Hides Force-Close Option",
+                        "app.py → auto-execute block",
+                        "If both open trade and daily loss cap conditions were active, the UI "
+                        "could show the daily-loss error instead of the force-close panel after "
+                        "a rerun.",
+                        "Added comment enforcing that open-trade check takes priority. "
+                        "Force-close panel always shown when open trade exists.",
+                        "Minimal — clarifying comment added.",
+                    ),
+                    (
+                        "B10 — DataFrame.get() API Misuse",
+                        "app.py → Agent Suggestions tab",
+                        "df.get('column', default) is not guaranteed across pandas versions "
+                        "for column access and can raise TypeError.",
+                        "col_data = df['col'] if 'col' in df.columns else pd.Series(dtype=float)",
+                        "None.",
+                    ),
+                ]
+
+                for title_b, loc, cause, fix, residual in _bias_detail:
+                    _h2(title_b)
+                    _para("Location: ", bold=True)
+                    _code(loc)
+                    _para("Root Cause:", bold=True)
+                    _para(cause)
+                    _para("Fix Applied:", bold=True)
+                    _code(fix)
+                    _para("Residual Risk:", bold=True)
+                    _para(residual, italic=True)
+                    doc.add_paragraph()
+
+                # ── Trade statistics from live log ───────────────────────────
+                if not closed_df.empty:
+                    _h1("Live Trade Log Statistics")
+                    _pnl_c = "pnl_inr" if "pnl_inr" in closed_df.columns else "pnl_pts"
+                    _pnls  = pd.to_numeric(closed_df[_pnl_c], errors="coerce")
+                    n_total = len(closed_df)
+                    n_wins  = int((_pnls > 0).sum())
+                    n_loss  = int((_pnls <= 0).sum())
+                    wr      = n_wins / n_total if n_total else 0
+                    avg_pnl = _pnls.mean() if n_total else 0
+                    tot_pnl = _pnls.sum()
+
+                    _para(f"Closed trades: {n_total}  |  Wins: {n_wins}  |  Losses: {n_loss}")
+                    _para(f"Win rate: {wr:.1%}  |  Avg P&L: ₹{avg_pnl:+,.0f}  |  Total: ₹{tot_pnl:+,.0f}")
+
+                    if "exit_reason" in closed_df.columns:
+                        _h3("Exit Reason Breakdown")
+                        er_tbl = doc.add_table(rows=1, cols=3)
+                        er_tbl.style = "Table Grid"
+                        er_hdr = er_tbl.rows[0].cells
+                        for i, h in enumerate(["Exit Reason", "Count", "Avg P&L"]):
+                            er_hdr[i].text = h
+                            er_hdr[i].paragraphs[0].runs[0].bold = True
+                        for reason, grp in closed_df.groupby("exit_reason"):
+                            gp = pd.to_numeric(grp[_pnl_c], errors="coerce").mean()
+                            r = er_tbl.add_row().cells
+                            r[0].text = EXIT_LABEL_MAP.get(str(reason), str(reason))
+                            r[1].text = str(len(grp))
+                            r[2].text = f"₹{gp:+,.0f}"
+
+                # ── Agent suggestions ────────────────────────────────────────
+                if suggestions:
+                    _h1("Agent Optimisation Suggestions")
+                    for sug in suggestions:
+                        _h3(f"{sug['priority']} — {sug['area']}")
+                        _para("Finding: ", bold=True)
+                        _para(sug["finding"])
+                        _para("Recommended action: ", bold=True)
+                        _para(sug["action"])
+                        doc.add_paragraph()
+
+                # ── Recommendations ──────────────────────────────────────────
+                _h1("Recommendations for Future ML Engine Development")
+                recs = [
+                    ("Walk-Forward Validation",
+                     "Split trade history: 70% training, 30% out-of-sample test. "
+                     "Report out-of-sample Sharpe ratio, not in-sample win rate."),
+                    ("Minimum Sample Thresholds",
+                     "Win rate reporting: n≥20. Threshold changes: n≥30 per candidate. "
+                     "Calibration bins: n≥5 (aim for 20+). Band risk adjustment: n≥10."),
+                    ("Probability Engine Upgrade",
+                     "At 100+ closed trades: logistic regression on [dist_target/ATR, "
+                     "dist_stop/ATR, momentum, volume_ratio, confidence_score]. "
+                     "Use Platt scaling for calibration. Online SGD update for regime adaptation."),
+                    ("Capital-Aware Simulation",
+                     "Disable wallet reload in backtests. Report max_drawdown and "
+                     "time_to_recovery alongside win rate."),
+                    ("Regime Awareness",
+                     "Tag trades with prevailing regime (trend score band). Report "
+                     "performance per regime to prevent trending-market results masking "
+                     "range-bound performance."),
+                ]
+                for rec_title, rec_body in recs:
+                    _h3(rec_title)
+                    _para(rec_body)
+
+                # ── Footer ───────────────────────────────────────────────────
+                doc.add_page_break()
+                _para(
+                    "This document is generated from live trade data and is not committed to "
+                    "version control. Update by clicking 'Download Research Report' in the "
+                    "Strategy Lab tab after accumulating additional trades.",
+                    italic=True,
+                )
+
+                buf = io.BytesIO()
+                doc.save(buf)
+                buf.seek(0)
+                return buf.read()
+
+            except ImportError:
+                return None
+
+        _report_col1, _report_col2 = st.columns([1, 3])
+        if _report_col1.button("📄 Generate DOCX Report", key="lab_gen_report",
+                               help="Builds the research report with live trade stats and downloads it."):
+            _doc_bytes = _build_bias_report_docx(
+                _closed_all if not _closed_all.empty else pd.DataFrame(),
+                _report_suggestions,
+            )
+            if _doc_bytes:
+                import datetime as _dt
+                _fname = f"MOIL_Strategy_Lab_{_dt.datetime.now().strftime('%Y%m%d_%H%M')}.docx"
+                st.session_state["_lab_docx_bytes"] = _doc_bytes
+                st.session_state["_lab_docx_fname"] = _fname
+                st.rerun()
+
+        if st.session_state.get("_lab_docx_bytes"):
+            st.download_button(
+                label="⬇️ Download Report DOCX (save to Desktop)",
+                data=st.session_state["_lab_docx_bytes"],
+                file_name=st.session_state.get("_lab_docx_fname", "MOIL_Strategy_Lab.docx"),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="lab_docx_dl",
+                help="Click to save to your Downloads / Desktop via browser.",
+            )
+            _report_col2.success(
+                f"✅ Report ready: **{st.session_state.get('_lab_docx_fname')}** — "
+                "click the download button above."
+            )
 
 st.markdown("---")
 st.caption("Research dashboard only. No buy/sell advice. Paid feeds such as Reuters, SteelMint or exchange data should be connected through licensed APIs or approved internal data pipelines.")
