@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from typing import List, Optional
 
 import pandas as pd
@@ -76,70 +76,89 @@ def classify_signal(confidence_score: int) -> str:
         return "rejected"
 
 
+_SQUARE_OFF_TIME = time(15, 15)   # hard NSE intraday cutoff
+
+
 def resolve_paper_trade(
     paper_signal: PaperSignal,
     day_bars: pd.DataFrame,
+    square_off_time: time = _SQUARE_OFF_TIME,
 ) -> PaperSignal:
     """
     Forward-simulate outcome on day_bars after entry.
-    Updates status, exit_price, exit_reason, pnl, r_multiple in-place.
+
+    Exit priority per bar (whichever fires first):
+      1. Stop-loss hit  (bar low ≤ stop for LONG, bar high ≥ stop for SHORT)
+      2. Target hit     (bar high ≥ target for LONG, bar low ≤ target for SHORT)
+      3. 15:15 hard square-off (bar time ≥ square_off_time → exit at bar open)
+
+    If none of the above fire and bars run out → close at last bar close (EOD).
     """
     if day_bars.empty:
-        paper_signal.status = "unresolved"
+        paper_signal.status = "open"
+        paper_signal.exit_reason = "awaiting_market"
         return paper_signal
 
     entry = paper_signal.entry_price
-    stop = paper_signal.stop
+    stop  = paper_signal.stop
     target = paper_signal.target
-    side = paper_signal.side
-    risk = abs(entry - stop)
+    side  = paper_signal.side
+    risk  = abs(entry - stop)
     if risk <= 0:
-        paper_signal.status = "unresolved"
+        paper_signal.status = "invalid"
+        paper_signal.exit_reason = "zero_risk"
         return paper_signal
 
-    for _, bar in day_bars.iterrows():
-        h, l = float(bar["high"]), float(bar["low"])
-        if side == "LONG":
-            if l <= stop:
-                paper_signal.status = "closed"
-                paper_signal.exit_price = stop
-                paper_signal.exit_reason = "stop_hit"
-                paper_signal.pnl = (stop - entry)
-                paper_signal.r_multiple = paper_signal.pnl / risk
-                return paper_signal
-            if h >= target:
-                paper_signal.status = "closed"
-                paper_signal.exit_price = target
-                paper_signal.exit_reason = "target_hit"
-                paper_signal.pnl = (target - entry)
-                paper_signal.r_multiple = paper_signal.pnl / risk
-                return paper_signal
-        else:
-            if h >= stop:
-                paper_signal.status = "closed"
-                paper_signal.exit_price = stop
-                paper_signal.exit_reason = "stop_hit"
-                paper_signal.pnl = (entry - stop)
-                paper_signal.r_multiple = paper_signal.pnl / risk
-                return paper_signal
-            if l <= target:
-                paper_signal.status = "closed"
-                paper_signal.exit_price = target
-                paper_signal.exit_reason = "target_hit"
-                paper_signal.pnl = (entry - target)
-                paper_signal.r_multiple = paper_signal.pnl / risk
-                return paper_signal
+    def _set_exit(price: float, reason: str) -> PaperSignal:
+        paper_signal.status     = "closed"
+        paper_signal.exit_price = round(price, 2)
+        paper_signal.exit_reason = reason
+        paper_signal.pnl        = round((price - entry) if side == "LONG" else (entry - price), 2)
+        paper_signal.r_multiple = round(paper_signal.pnl / risk, 3)
+        return paper_signal
 
-    last_close = float(day_bars.iloc[-1]["close"])
-    paper_signal.status = "closed"
-    paper_signal.exit_price = last_close
-    paper_signal.exit_reason = "eod_square_off"
-    if side == "LONG":
-        paper_signal.pnl = last_close - entry
+    # Detect datetime column (support DatetimeIndex or column named datetime/time)
+    dt_col = None
+    if hasattr(day_bars.index, "hour"):
+        dt_col = "__index__"
     else:
-        paper_signal.pnl = entry - last_close
-    paper_signal.r_multiple = paper_signal.pnl / risk
-    return paper_signal
+        for _c in day_bars.columns:
+            if "datetime" in _c.lower() or (_c.lower() == "time" and
+                    pd.api.types.is_datetime64_any_dtype(day_bars[_c])):
+                dt_col = _c
+                break
+
+    for _, bar in day_bars.iterrows():
+        h = float(bar["high"])
+        l = float(bar["low"])
+        o = float(bar.get("open", bar["close"]))
+        c = float(bar["close"])
+
+        # Resolve bar timestamp
+        bar_time: Optional[time] = None
+        if dt_col == "__index__":
+            bar_time = pd.Timestamp(bar.name).time()
+        elif dt_col:
+            bar_time = pd.Timestamp(bar[dt_col]).time()
+
+        # 1. Hard square-off at 15:15 — exit at bar open (best approximation)
+        if bar_time is not None and bar_time >= square_off_time:
+            return _set_exit(o, "square_off_15:15")
+
+        # 2. Stop-loss
+        if side == "LONG" and l <= stop:
+            return _set_exit(stop, "stop_hit")
+        if side == "SHORT" and h >= stop:
+            return _set_exit(stop, "stop_hit")
+
+        # 3. Target
+        if side == "LONG" and h >= target:
+            return _set_exit(target, "target_hit")
+        if side == "SHORT" and l <= target:
+            return _set_exit(target, "target_hit")
+
+    # Bars exhausted without hitting any exit — close at last bar close
+    return _set_exit(float(day_bars.iloc[-1]["close"]), "eod_square_off")
 
 
 def paper_log_to_df(log: list) -> pd.DataFrame:

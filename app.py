@@ -1937,6 +1937,28 @@ if _t9 is not None:
 
                             st.markdown("---")
 
+                            # Resolve open trades with latest 5m data
+                            _open_pt = [t for t in _pt_log if t.status == "open"]
+                            if _open_pt:
+                                st.info(f"🟡 {len(_open_pt)} trade(s) are **open** — signal fired today, market bars after entry not yet available. "
+                                        f"Click below after market close (or later today) to resolve them.")
+                                if st.button("🔄 Resolve open trades (fetch latest 5m data)", key="pt_resolve_open"):
+                                    with st.spinner("Fetching latest 5m data to resolve open trades…"):
+                                        _res_df, _res_src, _res_err = fetch_ohlcv("MOIL.NS", interval="5m", period="1d")
+                                    if not _res_df.empty:
+                                        _res_df = _res_df.reset_index()
+                                        _res_df.columns = [c.lower() for c in _res_df.columns]
+                                        for _ot in _open_pt:
+                                            _after_entry = _res_df[
+                                                pd.to_datetime(_res_df.get("datetime", _res_df.iloc[:, 0])) >
+                                                pd.to_datetime(f"{_ot.trade_date} {_ot.signal_time}")
+                                            ]
+                                            resolve_paper_trade(_ot, _after_entry)
+                                        st.success(f"Resolved {len(_open_pt)} trade(s) from {source_badge(_res_src)} data.")
+                                        st.rerun()
+                                    else:
+                                        st.warning(f"Could not fetch 5m data: {_res_err}. Try again after market close.")
+
                             # Full log
                             _disp_cols = [c for c in [
                                 "trade_date", "signal_time", "side", "track",
@@ -1953,6 +1975,21 @@ if _t9 is not None:
                                 _pt_disp["pnl"] = pd.to_numeric(_pt_disp["pnl"], errors="coerce").map(lambda x: f"{x:+.2f}" if pd.notna(x) else "—")
                             if "r_multiple" in _pt_disp.columns:
                                 _pt_disp["r_multiple"] = pd.to_numeric(_pt_disp["r_multiple"], errors="coerce").map(lambda x: f"{x:+.2f}R" if pd.notna(x) else "—")
+                            if "status" in _pt_disp.columns:
+                                _pt_disp["status"] = _pt_disp["status"].map(lambda s: {
+                                    "open":   "🟡 open (live)",
+                                    "closed": "✅ closed",
+                                    "invalid": "⚠️ invalid",
+                                }.get(str(s), str(s)))
+                            if "exit_reason" in _pt_disp.columns:
+                                _pt_disp["exit_reason"] = _pt_disp["exit_reason"].map(lambda r: {
+                                    "awaiting_market":  "⏳ market still open",
+                                    "stop_hit":         "🛑 stop hit",
+                                    "target_hit":       "🎯 target hit",
+                                    "square_off_15:15": "🔔 sq-off 15:15",
+                                    "eod_square_off":   "🔔 EOD sq-off",
+                                    "zero_risk":        "⚠️ zero risk",
+                                }.get(str(r), str(r)) if pd.notna(r) else "—")
                             st.dataframe(_pt_disp, use_container_width=True, hide_index=True)
 
                             _pt_csv = io.StringIO()
