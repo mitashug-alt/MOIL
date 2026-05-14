@@ -105,6 +105,7 @@ from data_layer.evidence_store import evidence_to_macro_rows, load_evidence_from
 from data_layer.validators import validate_evidence_dataframe
 from telegram_alert import send_telegram_alert, build_trade_alert_message, build_mtf_alert_message
 from model_evidence import compute_intraday_evidence, compute_mtf_evidence
+from data_feeds import fetch_ohlcv, fetch_daily, FeedSource, source_badge, _get_secret
 
 
 st.set_page_config(
@@ -362,30 +363,42 @@ def reset_market_cache():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def cached_index_quotes() -> dict:
-    """Fetch NIFTY 50 and Sensex last close / change. Cached 60 s."""
+    """Fetch NIFTY 50 and Sensex last close / change via priority chain. Cached 60 s."""
     result = {"NIFTY 50": None, "Sensex": None}
-    try:
-        import yfinance as _yf
-        for label, ticker in [("NIFTY 50", "^NSEI"), ("Sensex", "^BSESN")]:
-            try:
-                _tk = _yf.Ticker(ticker)
-                _hist = _tk.history(period="2d", interval="1d")
-                if _hist is not None and len(_hist) >= 1:
-                    _last = float(_hist["Close"].iloc[-1])
-                    _prev = float(_hist["Close"].iloc[-2]) if len(_hist) >= 2 else _last
-                    _chg = _last - _prev
-                    _pct = (_chg / _prev * 100) if _prev else 0.0
-                    result[label] = {"price": _last, "change": _chg, "pct": _pct}
-            except Exception:
-                pass
-    except Exception:
-        pass
+    for label, ticker in [("NIFTY 50", "^NSEI"), ("Sensex", "^BSESN")]:
+        try:
+            df, _src, _err = fetch_ohlcv(ticker, interval="1d", days=3)
+            if df is not None and not df.empty and "close" in df.columns:
+                _last = float(df["close"].iloc[-1])
+                _prev = float(df["close"].iloc[-2]) if len(df) >= 2 else _last
+                _chg  = _last - _prev
+                _pct  = (_chg / _prev * 100) if _prev else 0.0
+                result[label] = {"price": _last, "change": _chg, "pct": _pct, "source": _src}
+        except Exception:
+            pass
     return result
 
 
 # Sidebar -----------------------------------------------------------------
 st.sidebar.title("MOIL Macro Radar")
 st.sidebar.caption("Regime intelligence for MOIL, manganese and Indian metals")
+
+# ── Data feed status ──────────────────────────────────────────────────────
+st.sidebar.markdown("---")
+st.sidebar.markdown("#### 📡 Data feed")
+try:
+    _dhan_ok  = bool(_get_secret("dhan", "client_id")   and _get_secret("dhan", "access_token"))
+    _kite_ok  = bool(_get_secret("kite", "api_key")     and _get_secret("kite", "access_token"))
+    _tv_ok    = True  # tvdatafeed works without credentials
+    if _dhan_ok:
+        st.sidebar.success("🟢 TradingView → Dhan → Kite → yfinance")
+    elif _kite_ok:
+        st.sidebar.success("🟢 TradingView → Zerodha Kite → yfinance")
+    else:
+        st.sidebar.success("🟢 TradingView (free, live NSE data)")
+        st.sidebar.caption("Optionally add `[dhan]` or `[kite]` in secrets for broker-grade feeds.")
+except Exception:
+    pass
 
 # ── Mode selector ────────────────────────────────────────────────────────
 st.sidebar.markdown("---")
@@ -1295,53 +1308,149 @@ if _t9 is not None:
 
     with _t9:
         with _intra_sub:
-            # ── Section 1: Live feed (5m) ────────────────────────────────────────
-            st.markdown("### Live intraday (5m)")
-            _intraday_data, _intraday_err = cached_intraday_data(tuple(DEFAULT_MARKET_TICKERS.items()), demo=use_demo_data)
-            if _intraday_err:
-                st.caption("; ".join(f"{k}: {v}" for k, v in _intraday_err.items()))
-            if _intraday_data.get("MOIL") is not None and not _intraday_data["MOIL"].empty:
-                _idf = localize_to_ist(_intraday_data["MOIL"].tail(200))
-                _ifig = go.Figure(go.Candlestick(
-                    x=_idf.index, open=_idf["Open"], high=_idf["High"],
-                    low=_idf["Low"], close=_idf["Close"], name="MOIL 5m",
-                    increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-                    increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
-                ))
-                _ifig.update_layout(
-                    template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722",
-                    xaxis=dict(gridcolor="#2a2e39"), yaxis=dict(gridcolor="#2a2e39"),
-                    xaxis_rangeslider_visible=False, height=380, hovermode="x unified",
-                    title="MOIL intraday (5m) — live feed",
-                )
-                st.plotly_chart(_ifig, use_container_width=True)
-                _lr = _idf.iloc[-1]; _fr = _idf.iloc[0]
-                _fo = _fr["Open"]
-                _ret = (_lr["Close"] / _fo - 1) * 100 if _fo and _fo != 0 else 0.0
-                _sh = _idf["High"].max(); _sl = _idf["Low"].min()
-                _pos = (_lr["Close"] - _sl) / (_sh - _sl) if _sh > _sl else None
-                st.caption(
-                    f"Intraday change: {_ret:.2f}% | Last: ₹{_lr['Close']:.2f} | "
-                    f"H/L: ₹{_sh:.2f}/₹{_sl:.2f}"
-                    + (f" | Range pos: {_pos*100:.1f}%" if _pos is not None else "")
-                    + f" | Last bar: {_idf.index[-1]}"
-                )
-                _ibuf = io.StringIO(); _idf.to_csv(_ibuf)
-                st.download_button("Download 5m OHLCV", _ibuf.getvalue(), file_name="moil_intraday_5m.csv", mime="text/csv")
+            # ── Section 1: 5m candle chart with date selector ───────────────────
+            st.markdown("### Intraday 5-min chart")
+            _5m_ctrl1, _5m_ctrl2, _5m_ctrl3 = st.columns([2, 1, 1])
+            import datetime as _dt_mod
+            _5m_date_sel = _5m_ctrl1.date_input(
+                "Select date (leave today for live)",
+                value=_dt_mod.date.today(),
+                max_value=_dt_mod.date.today(),
+                key="intraday_5m_date",
+            )
+            _5m_fetch_btn = _5m_ctrl2.button("🔄 Fetch 5m data", key="fetch_5m", use_container_width=True)
+            _5m_live_only = _5m_ctrl3.checkbox("Today only (live)", value=False, key="5m_live_only")
+
+            # Fetch logic — TradingView → Dhan → Zerodha → yfinance
+            _5m_cache_key = f"intraday_5m_{_5m_date_sel}"
+            if _5m_fetch_btn or _5m_cache_key not in st.session_state:
+                with st.spinner("Fetching 5m OHLCV (TradingView → Dhan → Zerodha → yfinance)…"):
+                    _5m_period = "1d" if (_5m_live_only or _5m_date_sel == _dt_mod.date.today()) else None
+                    _5m_start  = _5m_date_sel.strftime("%Y-%m-%d")
+                    _5m_end    = (_5m_date_sel + _dt_mod.timedelta(days=1)).strftime("%Y-%m-%d")
+                    _5m_df, _5m_src, _5m_err = fetch_ohlcv(
+                        "MOIL.NS", interval="5m",
+                        from_date=_5m_start, to_date=_5m_end,
+                        period=_5m_period,
+                    )
+                    st.session_state[_5m_cache_key] = _5m_df
+                    st.session_state[f"{_5m_cache_key}_src"] = _5m_src
+                    if _5m_err:
+                        st.warning(f"5m feed: {_5m_err}")
+                    else:
+                        st.caption(f"5m data source: {source_badge(_5m_src)} — {len(_5m_df)} bars")
+
+            # Also try cached_intraday_data as last-resort fallback for today
+            _idf_src = st.session_state.get(_5m_cache_key)
+            if _idf_src is None or _idf_src.empty:
+                _intraday_data, _intraday_err = cached_intraday_data(
+                    tuple(DEFAULT_MARKET_TICKERS.items()), demo=use_demo_data)
+                if _intraday_data.get("MOIL") is not None and not _intraday_data["MOIL"].empty:
+                    _idf_src = _intraday_data["MOIL"]
+
+            if _idf_src is not None and not _idf_src.empty:
+                _idf = localize_to_ist(_idf_src) if hasattr(_idf_src.index, 'tz') or hasattr(_idf_src.index, 'tzinfo') else _idf_src
+                # Normalise column names
+                _idf.columns = [c.lower() if isinstance(c, str) else c for c in _idf.columns]
+                _open_col  = next((c for c in _idf.columns if "open"  in c.lower()), None)
+                _high_col  = next((c for c in _idf.columns if "high"  in c.lower()), None)
+                _low_col   = next((c for c in _idf.columns if "low"   in c.lower()), None)
+                _close_col = next((c for c in _idf.columns if "close" in c.lower()), None)
+                _vol_col   = next((c for c in _idf.columns if "volume" in c.lower()), None)
+                if all([_open_col, _high_col, _low_col, _close_col]):
+                    _ifig = go.Figure()
+                    _ifig.add_trace(go.Candlestick(
+                        x=_idf.index,
+                        open=_idf[_open_col], high=_idf[_high_col],
+                        low=_idf[_low_col],   close=_idf[_close_col],
+                        name="MOIL 5m",
+                        increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+                        increasing_fillcolor="#26a69a",  decreasing_fillcolor="#ef5350",
+                    ))
+                    if _vol_col:
+                        _ifig.add_trace(go.Bar(
+                            x=_idf.index, y=_idf[_vol_col],
+                            name="Volume", marker_color="#2962ff", opacity=0.35, yaxis="y2",
+                        ))
+                    _ifig.update_layout(
+                        template="plotly_dark", paper_bgcolor="#131722", plot_bgcolor="#131722",
+                        xaxis=dict(gridcolor="#2a2e39"), yaxis=dict(gridcolor="#2a2e39", title="Price"),
+                        yaxis2=dict(overlaying="y", side="right", showgrid=False, title="Volume"),
+                        xaxis_rangeslider_visible=False, height=400, hovermode="x unified",
+                        title=f"MOIL 5m — {_5m_date_sel.strftime('%d %b %Y')} ({len(_idf)} bars)",
+                        legend=dict(bgcolor="#1e2130", bordercolor="#2a2e39"),
+                    )
+                    st.plotly_chart(_ifig, use_container_width=True)
+                    _lr = _idf.iloc[-1]; _fr = _idf.iloc[0]
+                    _fo  = float(_fr[_open_col])
+                    _ret = (float(_lr[_close_col]) / _fo - 1) * 100 if _fo != 0 else 0.0
+                    _sh  = float(_idf[_high_col].max())
+                    _sl  = float(_idf[_low_col].min())
+                    _pos = (float(_lr[_close_col]) - _sl) / (_sh - _sl) if _sh > _sl else None
+                    st.caption(
+                        f"Change: {_ret:+.2f}% | Last: ₹{float(_lr[_close_col]):.2f} | "
+                        f"H/L: ₹{_sh:.2f}/₹{_sl:.2f}"
+                        + (f" | Range pos: {_pos*100:.1f}%" if _pos is not None else "")
+                        + f" | Bars: {len(_idf)} | Last: {_idf.index[-1]}"
+                    )
+                    _ibuf = io.StringIO(); _idf.to_csv(_ibuf)
+                    st.download_button("⬇ Download 5m OHLCV", _ibuf.getvalue(),
+                                       file_name=f"moil_5m_{_5m_date_sel}.csv", mime="text/csv",
+                                       key="dl_5m")
+                else:
+                    st.warning("5m data loaded but columns not recognised.")
             else:
-                st.info("Live 5m feed unavailable (yfinance blocked or MOIL not returned).")
+                st.info("Click **Fetch 5m data** above to load the chart.")
 
             st.markdown("---")
 
-            # ── Section 2: Date-wise 1-min candle chart ──────────────────────────
-            st.markdown("### Date-wise 1-min candle chart")
-            st.caption("Upload a 1-min OHLCV CSV/Parquet for MOIL, then pick any date to view the full session candle-by-candle.")
+            # ── Section 2: 1-min candle chart (yfinance auto-fetch + upload fallback) ─
+            st.markdown("### 1-min candle chart")
+            st.caption("Fetches today's 1m data automatically. Select any date or upload historical 1m CSV/Parquet.")
 
-            _1m_upload = st.file_uploader(
-                "Upload 1-min OHLCV (datetime, open, high, low, close, volume)",
+            _1m_ctrl1, _1m_ctrl2, _1m_ctrl3 = st.columns([2, 1, 1])
+            _1m_date_sel = _1m_ctrl1.date_input(
+                "Select date",
+                value=_dt_mod.date.today(),
+                max_value=_dt_mod.date.today(),
+                key="intraday_1m_date_sel",
+            )
+            _1m_fetch_btn = _1m_ctrl2.button("🔄 Fetch 1m data", key="fetch_1m", use_container_width=True)
+
+            # Auto-fetch via priority chain: TradingView → Dhan → Zerodha → yfinance
+            _1m_yf_key = f"intraday_1m_yf_{_1m_date_sel}"
+            if _1m_fetch_btn or _1m_yf_key not in st.session_state:
+                with st.spinner("Fetching 1m data (TradingView → Dhan → Zerodha → yfinance)…"):
+                    _1m_period = "1d" if _1m_date_sel == _dt_mod.date.today() else None
+                    _1m_start  = _1m_date_sel.strftime("%Y-%m-%d")
+                    _1m_end    = (_1m_date_sel + _dt_mod.timedelta(days=1)).strftime("%Y-%m-%d")
+                    _1m_fetched, _1m_src, _1m_err = fetch_ohlcv(
+                        "MOIL.NS", interval="1m",
+                        from_date=_1m_start, to_date=_1m_end,
+                        period=_1m_period,
+                    )
+                    if not _1m_fetched.empty:
+                        _1m_fetched = _1m_fetched.reset_index()
+                        _dt_found = next((c for c in _1m_fetched.columns if "date" in c.lower() or "time" in c.lower()), None)
+                        if _dt_found and _dt_found != "datetime":
+                            _1m_fetched = _1m_fetched.rename(columns={_dt_found: "datetime"})
+                        _1m_fetched["datetime"] = pd.to_datetime(_1m_fetched["datetime"])
+                        st.session_state[_1m_yf_key] = _1m_fetched
+                        st.caption(f"1m data source: {source_badge(_1m_src)} — {len(_1m_fetched)} bars")
+                    else:
+                        st.session_state[_1m_yf_key] = pd.DataFrame()
+                        _1m_hint = "yfinance only provides 7 days of 1m history" if "yfinance" in str(_1m_err) else ""
+                        st.info(f"No 1m data for {_1m_date_sel}. {_1m_hint} Upload a CSV below.")
+                        if _1m_err:
+                            st.caption(f"Feed errors: {_1m_err}")
+
+            # Upload fallback
+            _1m_upload = _1m_ctrl3.file_uploader(
+                "Or upload CSV/Parquet",
                 type=["csv", "parquet", "pq"],
                 accept_multiple_files=False,
                 key="intraday_1m_upload",
+                label_visibility="collapsed",
             )
             if _1m_upload is not None:
                 try:
@@ -1350,70 +1459,82 @@ if _t9 is not None:
                     else:
                         _1m_df_raw = pd.read_csv(_1m_upload)
                     _1m_df_raw.columns = [c.lower().strip() for c in _1m_df_raw.columns]
+                    _dt_col = next((c for c in _1m_df_raw.columns if "date" in c or "time" in c), _1m_df_raw.columns[0])
+                    _1m_df_raw = _1m_df_raw.rename(columns={_dt_col: "datetime"})
                     _1m_df_raw["datetime"] = pd.to_datetime(_1m_df_raw["datetime"], errors="coerce")
                     _1m_df_raw = _1m_df_raw.dropna(subset=["datetime"]).sort_values("datetime")
                     st.session_state["intraday_1m_df"] = _1m_df_raw
-                    st.success(f"Loaded {len(_1m_df_raw):,} rows of 1-min data.")
+                    st.success(f"Loaded {len(_1m_df_raw):,} rows from upload.")
                 except Exception as _e:
                     st.error(f"Could not parse 1-min file: {_e}")
 
-            _1m_df = st.session_state.get("intraday_1m_df")
+            # Merge: yfinance data takes priority for selected date, uploaded data for other dates
+            _1m_yf_data  = st.session_state.get(_1m_yf_key, pd.DataFrame())
+            _1m_up_data  = st.session_state.get("intraday_1m_df", pd.DataFrame())
+            if _1m_yf_data is not None and not _1m_yf_data.empty:
+                _1m_df = _1m_yf_data.copy()
+            elif _1m_up_data is not None and not _1m_up_data.empty:
+                _1m_df = _1m_up_data[_1m_up_data["datetime"].dt.date == _1m_date_sel].copy()
+            else:
+                _1m_df = pd.DataFrame()
+
             if _1m_df is not None and not _1m_df.empty:
-                _available_dates = sorted(_1m_df["datetime"].dt.date.unique(), reverse=True)
-                _sel_date_1m = st.selectbox(
-                    "Select date",
-                    _available_dates,
-                    format_func=lambda d: d.strftime("%A, %d %b %Y"),
-                    key="intraday_1m_date",
-                )
-                _day_1m = _1m_df[_1m_df["datetime"].dt.date == _sel_date_1m].copy()
-                if not _day_1m.empty:
+                _day_1m = _1m_df.copy()
+                # normalise column names
+                _day_1m.columns = [c.lower().strip() for c in _day_1m.columns]
+                _open_1m  = next((c for c in _day_1m.columns if "open"   in c), None)
+                _high_1m  = next((c for c in _day_1m.columns if "high"   in c), None)
+                _low_1m   = next((c for c in _day_1m.columns if "low"    in c), None)
+                _close_1m = next((c for c in _day_1m.columns if "close"  in c), None)
+                _vol_1m   = next((c for c in _day_1m.columns if "volume" in c), None)
+                _dt_1m    = next((c for c in _day_1m.columns if "date"   in c or "time" in c), None)
+                if all([_open_1m, _high_1m, _low_1m, _close_1m, _dt_1m]):
                     _fig1m = go.Figure()
                     _fig1m.add_trace(go.Candlestick(
-                        x=_day_1m["datetime"],
-                        open=_day_1m["open"], high=_day_1m["high"],
-                        low=_day_1m["low"], close=_day_1m["close"],
+                        x=_day_1m[_dt_1m],
+                        open=_day_1m[_open_1m], high=_day_1m[_high_1m],
+                        low=_day_1m[_low_1m],   close=_day_1m[_close_1m],
                         name="MOIL 1m",
                         increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
-                        increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
+                        increasing_fillcolor="#26a69a",  decreasing_fillcolor="#ef5350",
                     ))
-                    if "volume" in _day_1m.columns:
+                    if _vol_1m:
                         _fig1m.add_trace(go.Bar(
-                            x=_day_1m["datetime"], y=_day_1m["volume"],
-                            name="Volume", marker_color="#2962ff", opacity=0.4,
-                            yaxis="y2",
+                            x=_day_1m[_dt_1m], y=_day_1m[_vol_1m],
+                            name="Volume", marker_color="#2962ff", opacity=0.4, yaxis="y2",
                         ))
                     _fig1m.update_layout(
                         template="plotly_dark",
                         paper_bgcolor="#131722", plot_bgcolor="#131722",
                         xaxis=dict(gridcolor="#2a2e39", showgrid=True),
-                        yaxis=dict(gridcolor="#2a2e39", showgrid=True, title="Price"),
+                        yaxis=dict(gridcolor="#2a2e39", showgrid=True, title="Price ₹"),
                         yaxis2=dict(overlaying="y", side="right", showgrid=False, title="Volume"),
                         xaxis_rangeslider_visible=False,
                         height=460, hovermode="x unified",
-                        title=f"MOIL 1-min — {_sel_date_1m.strftime('%d %b %Y')} ({len(_day_1m)} bars)",
+                        title=f"MOIL 1-min — {_1m_date_sel.strftime('%d %b %Y')} ({len(_day_1m)} bars)",
                         legend=dict(bgcolor="#1e2130", bordercolor="#2a2e39", font=dict(color="#d1d4dc")),
                     )
                     st.plotly_chart(_fig1m, use_container_width=True)
-                    _d1_open = _day_1m["open"].iloc[0]
-                    _d1_close = _day_1m["close"].iloc[-1]
-                    _d1_ret = (_d1_close / _d1_open - 1) * 100 if _d1_open and _d1_open != 0 else 0.0
+                    _d1_open  = float(_day_1m[_open_1m].iloc[0])
+                    _d1_close = float(_day_1m[_close_1m].iloc[-1])
+                    _d1_ret   = (_d1_close / _d1_open - 1) * 100 if _d1_open != 0 else 0.0
                     c1m_1, c1m_2, c1m_3, c1m_4 = st.columns(4)
-                    c1m_1.metric("Open", f"₹{_d1_open:.2f}")
-                    c1m_2.metric("Close", f"₹{_d1_close:.2f}", delta=f"{_d1_ret:+.2f}%")
-                    c1m_3.metric("Day High", f"₹{_day_1m['high'].max():.2f}")
-                    c1m_4.metric("Day Low", f"₹{_day_1m['low'].min():.2f}")
+                    c1m_1.metric("Open",     f"₹{_d1_open:.2f}")
+                    c1m_2.metric("Close",    f"₹{_d1_close:.2f}", delta=f"{_d1_ret:+.2f}%")
+                    c1m_3.metric("Day High", f"₹{float(_day_1m[_high_1m].max()):.2f}")
+                    c1m_4.metric("Day Low",  f"₹{float(_day_1m[_low_1m].min()):.2f}")
                     _buf1m = io.StringIO(); _day_1m.to_csv(_buf1m, index=False)
                     st.download_button(
-                        f"Download 1m data for {_sel_date_1m}",
+                        f"⬇ Download 1m data ({_1m_date_sel})",
                         _buf1m.getvalue(),
-                        file_name=f"moil_1m_{_sel_date_1m}.csv",
+                        file_name=f"moil_1m_{_1m_date_sel}.csv",
                         mime="text/csv",
+                        key="dl_1m",
                     )
                 else:
-                    st.info(f"No 1-min bars found for {_sel_date_1m}.")
+                    st.warning("1m data loaded but required columns (open/high/low/close) not found.")
             else:
-                st.info("Upload a 1-min OHLCV file above to enable date-wise candle view.")
+                st.info("💡 Click **Fetch 1m data** to load today's chart, or pick a past date (yfinance provides up to 7 days of 1m history). For older data, upload a CSV/Parquet.")
 
             st.markdown("---")
 
@@ -2070,31 +2191,23 @@ if _t9 is not None:
                 if _daily_for_mtf.empty:
                     st.error("No daily price data available. Load market data first.")
                 else:
-                    # Fix #1: fetch real MOIL.NS daily OHLCV from yfinance (1 year)
-                    _moil_daily = None
-                    try:
-                        import yfinance as _yf_mtf
-                        _raw = _yf_mtf.download("MOIL.NS", period="1y", interval="1d", progress=False, auto_adjust=True)
-                        if not _raw.empty:
-                            _raw.columns = [c.lower() if isinstance(c, str) else c[0].lower() for c in _raw.columns]
-                            _moil_daily = _raw[["open", "high", "low", "close", "volume"]].dropna()
-                            st.caption(f"Using real MOIL.NS daily OHLCV — {len(_moil_daily)} bars from yfinance.")
-                    except Exception as _yf_err:
-                        st.warning(f"yfinance fetch failed ({_yf_err}). Falling back to price panel close.")
-
-                    if _moil_daily is None or _moil_daily.empty:
+                    # Fetch real MOIL.NS daily OHLCV: TradingView → Dhan → Zerodha → yfinance
+                    _moil_daily, _mtf_src, _mtf_err = fetch_daily("MOIL.NS", years=1)
+                    if not _moil_daily.empty:
+                        st.caption(f"MTF engine data: {source_badge(_mtf_src)} — {len(_moil_daily)} daily bars")
+                    else:
+                        if _mtf_err:
+                            st.warning(f"All feeds failed: {_mtf_err}. Falling back to price panel.")
                         # Graceful fallback: approximate OHLCV from close panel
                         _moil_close = _daily_for_mtf["MOIL"].dropna() if "MOIL" in _daily_for_mtf.columns else pd.Series(dtype=float)
                         if _moil_close.empty:
-                            st.error("MOIL data not found in price panel.")
+                            st.error("MOIL data not found. Configure Dhan/Kite credentials or ensure market data is loaded.")
                             _moil_daily = None
                         else:
                             st.warning("Using close-only fallback: OHLCV approximated. ATR and candle patterns will be inaccurate.")
                             _moil_daily = pd.DataFrame({
-                                "open":   _moil_close,
-                                "high":   _moil_close,
-                                "low":    _moil_close,
-                                "close":  _moil_close,
+                                "open":   _moil_close, "high": _moil_close,
+                                "low":    _moil_close, "close": _moil_close,
                                 "volume": float("nan"),
                             })
 
@@ -2662,19 +2775,14 @@ if _t9 is not None:
                     help="Annual interest on leveraged (>1x) MTF positions. Typically 18% p.a. in India.")
 
             if st.button("▶️ Run MTF Backtest", key="mtf_run_bt", type="primary"):
-                # Fix #1: fetch real MOIL.NS daily OHLCV from yfinance for backtest
-                _moil_bt_df = None
-                try:
-                    import yfinance as _yf_bt
-                    _bt_raw = _yf_bt.download("MOIL.NS", period="5y", interval="1d", progress=False, auto_adjust=True)
-                    if not _bt_raw.empty:
-                        _bt_raw.columns = [c.lower() if isinstance(c, str) else c[0].lower() for c in _bt_raw.columns]
-                        _moil_bt_df = _bt_raw[["open", "high", "low", "close", "volume"]].dropna()
-                        st.caption(f"Backtest using real MOIL.NS OHLCV — {len(_moil_bt_df)} bars (5y).")
-                except Exception as _bt_yf_err:
-                    st.warning(f"yfinance fetch failed ({_bt_yf_err}). Falling back to price panel.")
-
-                if (_moil_bt_df is None or _moil_bt_df.empty):
+                # Fetch 5y daily OHLCV: TradingView → Dhan → Zerodha → yfinance
+                with st.spinner("Fetching MOIL.NS daily OHLCV (TradingView → Dhan → Zerodha → yfinance)…"):
+                    _moil_bt_df, _bt_src, _bt_err = fetch_daily("MOIL.NS", years=5)
+                if not _moil_bt_df.empty:
+                    st.caption(f"Backtest data: {source_badge(_bt_src)} — {len(_moil_bt_df)} bars")
+                else:
+                    if _bt_err:
+                        st.warning(f"All feeds failed: {_bt_err}. Falling back to price panel.")
                     if prices.empty or "MOIL" not in prices.columns:
                         st.error("Load market data first (MOIL daily prices required).")
                         _moil_bt_df = None
