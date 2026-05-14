@@ -1948,11 +1948,17 @@ if _t9 is not None:
                                     if not _res_df.empty:
                                         _res_df = _res_df.reset_index()
                                         _res_df.columns = [c.lower() for c in _res_df.columns]
+                                        # Normalise to IST then drop tz for naive comparison
+                                        _res_df = localize_to_ist(_res_df) if hasattr(_res_df.index, "tz") and _res_df.index.tz is not None else _res_df
+                                        _dt_col = next((c for c in _res_df.columns if "datetime" in c or c == "index"), _res_df.columns[0])
+                                        _dts = pd.to_datetime(_res_df[_dt_col])
+                                        if _dts.dt.tz is not None:
+                                            _dts = _dts.dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
+                                        _res_df = _res_df.copy()
+                                        _res_df[_dt_col] = _dts
                                         for _ot in _open_pt:
-                                            _after_entry = _res_df[
-                                                pd.to_datetime(_res_df.get("datetime", _res_df.iloc[:, 0])) >
-                                                pd.to_datetime(f"{_ot.trade_date} {_ot.signal_time}")
-                                            ]
+                                            _entry_ts = pd.to_datetime(f"{_ot.trade_date} {_ot.signal_time}")
+                                            _after_entry = _res_df[_res_df[_dt_col] > _entry_ts]
                                             resolve_paper_trade(_ot, _after_entry)
                                         st.success(f"Resolved {len(_open_pt)} trade(s) from {source_badge(_res_src)} data.")
                                         st.rerun()
