@@ -140,9 +140,12 @@ def _fetch_tradingview(
     No login or API key needed for free/public symbols on NSE/BSE.
     """
     try:
-        from tvdatafeed import TvDatafeed, Interval  # type: ignore
+        from tvDatafeed import TvDatafeed, Interval  # type: ignore  # tvdatafeed-enhanced
     except ImportError:
-        raise ImportError("tvdatafeed not installed. Run: pip install tvdatafeed-enhanced")
+        try:
+            from tvdatafeed import TvDatafeed, Interval  # type: ignore  # legacy
+        except ImportError:
+            raise ImportError("tvdatafeed not installed. Run: pip install tvdatafeed-enhanced")
 
     symbol_info = _TV_SYMBOL_MAP.get(ticker)
     if symbol_info is None:
@@ -355,7 +358,17 @@ def _fetch_yfinance(
                           interval=interval, progress=False, auto_adjust=True)
 
     if raw is None or raw.empty:
+        # Retry with period fallback for intraday (date ranges can fail for recent data)
+        if interval in ("1m", "5m", "15m", "30m", "1h") and not period:
+            raw = yf.download(ticker, period="5d", interval=interval,
+                              progress=False, auto_adjust=True)
+    if raw is None or raw.empty:
         raise ValueError(f"yfinance returned no data for {ticker}.")
+    # Flatten multi-level columns from yfinance >=0.2.x
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = [c[0].lower() for c in raw.columns]
+    else:
+        raw.columns = [c.lower() for c in raw.columns]
     return raw
 
 

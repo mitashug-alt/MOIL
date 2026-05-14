@@ -1994,12 +1994,32 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                 label_visibility="collapsed",
             )
 
-            with st.expander("Strategy settings", expanded=False):
-                _vol_mult = st.slider("Volume ratio threshold (x prev 5 bars)", 1.0, 4.0, 2.0, 0.1, key="it_vol")
-                _rr = st.slider("Risk-reward", 1.0, 3.0, 2.0, 0.1, key="it_rr")
-                _one_trade = st.checkbox("One trade per day", value=True, key="it_one")
-                _ema_filter = st.checkbox("Require EMA20 filter", value=False, key="it_ema")
-                _slip = st.slider("Slippage + costs (bps total)", 0, 50, 7, 1, key="it_slip")
+            with st.expander("⚙️ Strategy settings", expanded=False):
+                _vol_mult = st.slider(
+                    "Volume ratio threshold (x avg of prev 5 bars)", 1.0, 4.0, 2.0, 0.1, key="it_vol",
+                    help="A breakout bar must have volume ≥ this multiple of the average of the prior 5 bars. "
+                         "2.0 means the breakout candle must be at least 2× the recent average volume — filters out low-conviction moves. "
+                         "Lower = more signals (more noise), higher = fewer but stronger signals.")
+                _rr = st.slider(
+                    "Risk-reward ratio (target / stop)", 1.0, 3.0, 2.0, 0.1, key="it_rr",
+                    help="For every ₹1 risked on the stop-loss, the target is set at ₹R. "
+                         "2.0 means target = 2× the distance from entry to stop. "
+                         "Higher R gives better per-trade payout but fewer targets get hit.")
+                _one_trade = st.checkbox(
+                    "One trade per day", value=True, key="it_one",
+                    help="Restricts the engine to one entry per trading session. "
+                         "Recommended for MOIL: after the first ORB breakout, liquidity often thins out and re-entries add risk. "
+                         "Uncheck only to test multiple intraday signals.")
+                _ema_filter = st.checkbox(
+                    "Require EMA20 filter", value=False, key="it_ema",
+                    help="When enabled, a LONG signal is only taken if price > EMA20, and SHORT only if price < EMA20. "
+                         "Aligns trades with the short-term trend. "
+                         "Currently off by default — MOIL's intraday trend reversals can make this filter too restrictive.")
+                _slip = st.slider(
+                    "Slippage + transaction costs (bps total, per side)", 0, 50, 7, 1, key="it_slip",
+                    help="Total friction per trade in basis points (1 bps = 0.01%). Applied on both entry and exit. "
+                         "Default 7 bps = ~0.07% per side (covers STT ~0.025% + brokerage ~0.03% + market impact ~0.015%). "
+                         "Set higher (10–15 bps) for conservative estimates on thin days.")
 
             if st.button("▶️ Run intraday backtest", use_container_width=True, key="it_run", type="primary"):
                 with st.spinner("Running VWAP + ORB backtest..."):
