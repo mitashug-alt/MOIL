@@ -126,7 +126,13 @@ st.markdown(
         background-color: #131722 !important;
         color: #d1d4dc !important;
     }
-    .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1440px; }
+    /* Fix: push content below Streamlit's top toolbar (~60px) */
+    .block-container { padding-top: 4.5rem; padding-bottom: 2rem; max-width: 1440px; }
+
+    /* Hide the default Streamlit header bar so it doesn't overlap */
+    header[data-testid="stHeader"] { background: transparent !important; }
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
 
     /* ── Sidebar ──────────────────────────────────────────────── */
     [data-testid="stSidebar"] {
