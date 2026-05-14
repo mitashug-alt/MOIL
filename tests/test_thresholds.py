@@ -20,3 +20,13 @@ def test_config_override():
     cfg = tracker_config({"symbol": "TEST", "outstanding_shares": 100})
     assert cfg.symbol == "TEST"
     assert cfg.outstanding_shares == 100
+
+
+def test_zero_outstanding_shares_no_division_by_zero():
+    """Regression test: zero outstanding_shares should not cause ZeroDivisionError."""
+    cfg = tracker_config({"outstanding_shares": 0})
+    # All percentage properties should return 0.0, not raise
+    assert cfg.bulk_threshold_pct == 0.0
+    assert cfg.named_holder_threshold_pct == 0.0
+    assert cfg.sast_five_percent_pct == 0.0
+    assert cfg.sast_two_percent_pct == 0.0

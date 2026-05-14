@@ -1,0 +1,20 @@
+# NOTE: Streamlit requires a persistent server process and cannot run on Netlify
+# (a static site host). Deploy to a containerized platform instead:
+#
+# Options:
+# 1. Render: Create a Web Service with start command: streamlit run app.py
+# 2. Railway: Deploy with Dockerfile or Procfile
+# 3. Heroku: Use heroku.yml with container stack
+# 4. AWS ECS / GCP Cloud Run / Azure Container Apps
+#
+# Required environment variables:
+# - STREAMLIT_SERVER_PORT (typically 8501)
+# - STREAMLIT_SERVER_ADDRESS (0.0.0.0 for cloud)
+#
+# Example render.yaml:
+# services:
+#   - type: web
+#     name: moil-tracker
+#     runtime: python
+#     buildCommand: pip install -r requirements.txt
+#     startCommand: streamlit run app.py --server.port=8501 --server.address=0.0.0.0

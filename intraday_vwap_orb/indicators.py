@@ -11,7 +11,8 @@ def compute_vwap(df: pd.DataFrame, price_source: str = "hlc3") -> pd.Series:
     }.get(price_source, (df["high"] + df["low"] + df["close"]) / 3)
     cum_pv = (src * df["volume"]).groupby(df["datetime"].dt.date).cumsum()
     cum_v = df["volume"].groupby(df["datetime"].dt.date).cumsum()
-    return cum_pv / cum_v
+    # Avoid division by zero when cum_v is 0 (no volume traded)
+    return cum_pv.div(cum_v).replace([float("inf"), -float("inf")], float("nan"))
 
 
 def compute_ema(series: pd.Series, period: int = 20) -> pd.Series:

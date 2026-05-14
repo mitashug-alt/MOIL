@@ -38,18 +38,26 @@ class TrackerConfig:
 
     @property
     def bulk_threshold_pct(self) -> float:
+        if self.outstanding_shares == 0:
+            return 0.0
         return (self.bulk_threshold_shares / self.outstanding_shares) * 100
 
     @property
     def named_holder_threshold_pct(self) -> float:
+        if self.outstanding_shares == 0:
+            return 0.0
         return (self.named_holder_threshold_shares / self.outstanding_shares) * 100
 
     @property
     def sast_five_percent_pct(self) -> float:
+        if self.outstanding_shares == 0:
+            return 0.0
         return (self.sast_five_percent_shares / self.outstanding_shares) * 100
 
     @property
     def sast_two_percent_pct(self) -> float:
+        if self.outstanding_shares == 0:
+            return 0.0
         return (self.sast_two_percent_shares / self.outstanding_shares) * 100
 
 

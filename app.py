@@ -90,30 +90,117 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Modern UI theming (trading-desk inspired)
+# Modern UI theming — TradingView / Zerodha Kite dark-desk style
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Space Grotesk', sans-serif; }
-    .stApp { background: radial-gradient(circle at 10% 10%, #0b1220 0, #0a0f1a 40%, #080c15 100%); color: #e5e7eb; }
-    .block-container { padding-top: 1.25rem; padding-bottom: 1.75rem; }
-    /* Cards / metrics */
-    .css-1v3fvcr, .stMetric, .stDataFrame, .stPlotlyChart, .stTable { background: #0f172a; border-radius: 12px; padding: 8px 10px; border: 1px solid rgba(255,255,255,0.04); box-shadow: 0 12px 28px rgba(0,0,0,0.35); }
-    /* Tabs */
-    .stTabs [data-baseweb="tab"] { color: #cbd5f5; font-weight: 600; background: transparent; border: none; }
-    .stTabs [data-baseweb="tab"] [data-testid="stMarkdownContainer"] p { margin: 0; }
-    .stTabs [aria-selected="true"] { color: #ffffff; border-bottom: 3px solid #38bdf8; }
-    /* Buttons */
-    .stButton>button { background: linear-gradient(90deg, #2563eb, #0ea5e9); color: #fff; border: none; border-radius: 10px; padding: 0.55rem 0.9rem; font-weight: 600; box-shadow: 0 10px 24px rgba(37,99,235,0.35); }
-    .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 14px 28px rgba(14,165,233,0.35); }
-    /* Tables */
-    .stDataFrame thead tr th { background: #0b1629 !important; color: #cbd5f5 !important; }
-    .stDataFrame tbody tr { background: #0f172a; }
-    /* Inputs */
-    .stTextInput>div>div>input, .stSelectbox [data-baseweb="select"]>div { background: #0f172a; color: #e5e7eb; border: 1px solid rgba(255,255,255,0.06); }
-    /* Markdown tweaks */
-    h1, h2, h3, h4, h5, h6 { color: #f8fafc; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    /* ── Base ─────────────────────────────────────────────────── */
+    html, body, [class*="css"], .stApp {
+        font-family: 'Inter', sans-serif;
+        background-color: #131722 !important;
+        color: #d1d4dc !important;
+    }
+    .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1440px; }
+
+    /* ── Sidebar ──────────────────────────────────────────────── */
+    [data-testid="stSidebar"] {
+        background-color: #1e2130 !important;
+        border-right: 1px solid #2a2e39;
+    }
+    [data-testid="stSidebar"] * { color: #d1d4dc !important; }
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stSlider label,
+    [data-testid="stSidebar"] .stCheckbox label { color: #b2b5be !important; font-size: 0.82rem; }
+
+    /* ── All text ─────────────────────────────────────────────── */
+    p, span, li, td, th, label, div { color: #d1d4dc; }
+    h1, h2, h3, h4, h5, h6 { color: #ffffff !important; font-weight: 600; letter-spacing: -0.3px; }
+    .stMarkdown p, .stCaption, [data-testid="stCaptionContainer"] { color: #868993 !important; font-size: 0.82rem; }
+
+    /* ── Metric cards ─────────────────────────────────────────── */
+    [data-testid="metric-container"] {
+        background: #1e2130;
+        border: 1px solid #2a2e39;
+        border-radius: 10px;
+        padding: 14px 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    [data-testid="metric-container"] [data-testid="stMetricLabel"] { color: #868993 !important; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+    [data-testid="metric-container"] [data-testid="stMetricValue"] { color: #ffffff !important; font-size: 1.6rem; font-weight: 700; }
+    [data-testid="metric-container"] [data-testid="stMetricDelta"] { font-size: 0.8rem; }
+
+    /* ── Tabs ─────────────────────────────────────────────────── */
+    .stTabs [data-baseweb="tab-list"] { background: #1e2130; border-radius: 8px; padding: 4px 6px; border: 1px solid #2a2e39; gap: 2px; }
+    .stTabs [data-baseweb="tab"] { color: #868993 !important; font-weight: 500; font-size: 0.85rem; background: transparent; border: none; border-radius: 6px; padding: 6px 14px; }
+    .stTabs [aria-selected="true"] { color: #ffffff !important; background: #2962ff !important; font-weight: 600; }
+    .stTabs [data-baseweb="tab-highlight"] { display: none; }
+
+    /* ── Buttons ──────────────────────────────────────────────── */
+    .stButton>button {
+        background: #2962ff;
+        color: #ffffff !important;
+        border: none;
+        border-radius: 6px;
+        padding: 0.5rem 1.1rem;
+        font-weight: 600;
+        font-size: 0.85rem;
+        transition: background 0.15s, transform 0.1s;
+    }
+    .stButton>button:hover { background: #1e53e5; transform: translateY(-1px); }
+    .stDownloadButton>button { background: #1e2130; color: #d1d4dc !important; border: 1px solid #2a2e39; border-radius: 6px; font-size: 0.82rem; }
+    .stDownloadButton>button:hover { background: #2a2e39; }
+
+    /* ── DataFrames / Tables ──────────────────────────────────── */
+    .stDataFrame, [data-testid="stDataFrame"] {
+        background: #1e2130 !important;
+        border: 1px solid #2a2e39;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .stDataFrame thead tr th {
+        background: #131722 !important;
+        color: #868993 !important;
+        font-size: 0.75rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        border-bottom: 1px solid #2a2e39 !important;
+    }
+    .stDataFrame tbody tr td { color: #d1d4dc !important; font-size: 0.82rem !important; background: #1e2130 !important; }
+    .stDataFrame tbody tr:hover td { background: #252a3a !important; }
+
+    /* ── Inputs / Selects ─────────────────────────────────────── */
+    .stTextInput>div>div>input,
+    .stNumberInput>div>div>input,
+    .stSelectbox [data-baseweb="select"]>div,
+    .stTextArea textarea {
+        background: #1e2130 !important;
+        color: #d1d4dc !important;
+        border: 1px solid #2a2e39 !important;
+        border-radius: 6px;
+    }
+    .stSelectbox [data-baseweb="select"] div[aria-selected] { color: #d1d4dc !important; }
+    .stSlider [data-testid="stThumbValue"] { color: #d1d4dc !important; }
+    .stSlider label { color: #868993 !important; font-size: 0.82rem; }
+    .stCheckbox label { color: #d1d4dc !important; }
+
+    /* ── Expander ─────────────────────────────────────────────── */
+    .streamlit-expanderHeader { background: #1e2130 !important; color: #d1d4dc !important; border: 1px solid #2a2e39; border-radius: 8px; }
+    .streamlit-expanderContent { background: #1a1f2e !important; border: 1px solid #2a2e39; border-top: none; border-radius: 0 0 8px 8px; }
+
+    /* ── Alerts / info boxes ──────────────────────────────────── */
+    .stSuccess { background: #0d2a1e !important; color: #26a69a !important; border-left: 3px solid #26a69a; border-radius: 6px; }
+    .stInfo { background: #0d1f3a !important; color: #2196f3 !important; border-left: 3px solid #2196f3; border-radius: 6px; }
+    .stWarning { background: #2a1f0d !important; color: #ff9800 !important; border-left: 3px solid #ff9800; border-radius: 6px; }
+    .stError { background: #2a0d0d !important; color: #ef5350 !important; border-left: 3px solid #ef5350; border-radius: 6px; }
+
+    /* ── File uploader ────────────────────────────────────────── */
+    [data-testid="stFileUploader"] { background: #1e2130; border: 1px dashed #2a2e39; border-radius: 8px; padding: 8px; }
+    [data-testid="stFileUploader"] label { color: #868993 !important; font-size: 0.82rem; }
+
+    /* ── Section divider ──────────────────────────────────────── */
+    hr { border-color: #2a2e39 !important; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -411,7 +498,8 @@ with tabs[0]:
             st.plotly_chart(intraday_fig, use_container_width=True)
             last_row = intraday_df.iloc[-1]
             first_row = intraday_df.iloc[0]
-            intraday_return = (last_row["Close"] / first_row["Open"] - 1) * 100
+            first_open = first_row["Open"]
+            intraday_return = (last_row["Close"] / first_open - 1) * 100 if first_open and first_open != 0 else 0.0
             session_high = intraday_df["High"].max()
             session_low = intraday_df["Low"].min()
             pos = None
@@ -475,6 +563,7 @@ with tabs[0]:
                         st.session_state["intraday_daily"] = daily
                         st.session_state["intraday_feats"] = feats
                         st.session_state["intraday_summary"] = bt_summary
+                        st.session_state["intraday_prepared"] = prepared
                         st.success(f"Backtest complete: {bt_summary['total_trades']} trades")
                     except Exception as e:
                         st.error(f"Backtest failed: {e}")
@@ -484,20 +573,156 @@ with tabs[0]:
                 trades = st.session_state["intraday_trades"]
                 daily = st.session_state.get("intraday_daily", pd.DataFrame())
                 feats = st.session_state.get("intraday_feats", pd.DataFrame())
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Trades", s.get("total_trades", 0))
-                c2.metric("Win rate", f"{s.get('win_rate', 0):.1%}")
-                c3.metric("Net PnL", f"{s.get('net_pnl', 0):.2f}")
-                st.dataframe(trades.head(15), use_container_width=True)
-                st.dataframe(daily.head(10), use_container_width=True)
-                if not feats.empty:
-                    st.dataframe(feats.head(10), use_container_width=True)
+
+                # ── Top-line KPIs ────────────────────────────────────────
+                st.markdown("#### Engine performance")
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Total trades", s.get("total_trades", 0))
+                k2.metric("Win rate", f"{s.get('win_rate', 0):.1%}")
+                k3.metric("Net PnL ₹", f"{s.get('net_pnl', 0):,.0f}")
+                k4.metric("Avg R", f"{s.get('avg_r', 0):.2f}R")
+                pf = s.get("profit_factor")
+                k5.metric("Profit factor", f"{pf:.2f}" if pf else "—")
+                st.markdown("---")
+
+                # ── Per-day performance table ────────────────────────────
+                if not daily.empty:
+                    st.markdown("##### Daily P&L summary")
+                    daily_disp = daily.copy()
+                    daily_disp["result"] = daily_disp["net_pnl"].apply(lambda x: "✅ Win" if x > 0 else ("❌ Loss" if x < 0 else "➖ Flat"))
+                    daily_disp["net_pnl"] = daily_disp["net_pnl"].map(lambda x: f"₹{x:,.0f}")
+                    daily_disp["gross_pnl"] = daily_disp["gross_pnl"].map(lambda x: f"₹{x:,.0f}")
+                    daily_disp["avg_r"] = daily_disp["avg_r"].map(lambda x: f"{x:.2f}R" if pd.notna(x) else "—")
+                    if "cumulative_net_pnl" in daily_disp.columns:
+                        daily_disp["cumulative_net_pnl"] = daily_disp["cumulative_net_pnl"].map(lambda x: f"₹{x:,.0f}")
+                    show_cols = [c for c in ["trade_date", "symbol", "trades", "winners", "losers", "result", "gross_pnl", "net_pnl", "avg_r", "cumulative_net_pnl"] if c in daily_disp.columns]
+                    st.dataframe(daily_disp[show_cols], use_container_width=True, hide_index=True)
+
+                # ── Per-day drill-down ───────────────────────────────────
+                st.markdown("---")
+                st.markdown("##### Drill-down: trades on a specific date")
+                if not trades.empty:
+                    trade_dates = sorted(trades["trade_date"].astype(str).unique(), reverse=True)
+                    sel_date = st.selectbox("Select trade date", trade_dates, key="bt_drill_date")
+                    day_trades = trades[trades["trade_date"].astype(str) == sel_date]
+
+                    if not day_trades.empty:
+                        # Signal validation columns
+                        val_cols = [c for c in [
+                            "trade_date", "entry_datetime", "exit_datetime", "side",
+                            "entry_price", "exit_price", "initial_stop", "target",
+                            "risk_per_share", "realized_r_multiple", "net_pnl",
+                            "exit_reason", "bars_held",
+                            "entry_vwap", "entry_ema20",
+                            "opening_range_high", "opening_range_low",
+                            "breakout_volume_ratio", "notes"
+                        ] if c in day_trades.columns]
+                        val_df = day_trades[val_cols].copy()
+                        for col in ["entry_price", "exit_price", "initial_stop", "target", "entry_vwap", "entry_ema20", "opening_range_high", "opening_range_low"]:
+                            if col in val_df.columns:
+                                val_df[col] = val_df[col].map(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
+                        if "realized_r_multiple" in val_df.columns:
+                            val_df["realized_r_multiple"] = val_df["realized_r_multiple"].map(lambda x: f"{x:.2f}R" if pd.notna(x) else "—")
+                        if "breakout_volume_ratio" in val_df.columns:
+                            val_df["breakout_volume_ratio"] = val_df["breakout_volume_ratio"].map(lambda x: f"{x:.2f}x" if pd.notna(x) else "—")
+                        if "net_pnl" in val_df.columns:
+                            val_df["net_pnl"] = val_df["net_pnl"].map(lambda x: f"₹{x:,.0f}" if pd.notna(x) else "—")
+                        st.dataframe(val_df, use_container_width=True, hide_index=True)
+
+                        # ── Annotated intraday chart for selected day ────
+                        st.markdown(f"###### Intraday chart — {sel_date} (5m bars with trade annotations)")
+                        prepared_df = st.session_state.get("intraday_prepared")
+                        if prepared_df is not None:
+                            day_bars = prepared_df[prepared_df["datetime"].dt.date.astype(str) == sel_date]
+                        else:
+                            day_bars = pd.DataFrame()
+
+                        if not day_bars.empty:
+                            fig_day = go.Figure()
+                            fig_day.add_trace(go.Candlestick(
+                                x=day_bars["datetime"], open=day_bars["open"],
+                                high=day_bars["high"], low=day_bars["low"], close=day_bars["close"],
+                                name="MOIL 5m", increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+                                increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
+                            ))
+                            if "vwap" in day_bars.columns:
+                                fig_day.add_trace(go.Scatter(x=day_bars["datetime"], y=day_bars["vwap"], mode="lines", name="VWAP", line=dict(color="#f7c948", width=1.5, dash="dot")))
+                            if "ema20" in day_bars.columns:
+                                fig_day.add_trace(go.Scatter(x=day_bars["datetime"], y=day_bars["ema20"], mode="lines", name="EMA20", line=dict(color="#2196f3", width=1.2, dash="dash")))
+                            # OR levels
+                            or_h = day_trades["opening_range_high"].iloc[0] if "opening_range_high" in day_trades.columns else None
+                            or_l = day_trades["opening_range_low"].iloc[0] if "opening_range_low" in day_trades.columns else None
+                            x0, x1 = day_bars["datetime"].iloc[0], day_bars["datetime"].iloc[-1]
+                            if pd.notna(or_h) and or_h:
+                                fig_day.add_hline(y=float(or_h), line=dict(color="#ff9800", width=1, dash="dot"), annotation_text="OR High", annotation_position="right")
+                            if pd.notna(or_l) and or_l:
+                                fig_day.add_hline(y=float(or_l), line=dict(color="#ff9800", width=1, dash="dot"), annotation_text="OR Low", annotation_position="right")
+                            # Trade annotations
+                            for _, tr in day_trades.iterrows():
+                                color = "#26a69a" if tr.get("side") == "LONG" else "#ef5350"
+                                marker_sym = "triangle-up" if tr.get("side") == "LONG" else "triangle-down"
+                                try:
+                                    fig_day.add_trace(go.Scatter(
+                                        x=[tr["entry_datetime"]], y=[float(tr["entry_price"])],
+                                        mode="markers+text", marker=dict(symbol=marker_sym, size=14, color=color),
+                                        text=[f"Entry {tr['side']}"], textposition="top center",
+                                        textfont=dict(color=color, size=10), name="Entry", showlegend=False,
+                                    ))
+                                    fig_day.add_trace(go.Scatter(
+                                        x=[tr["exit_datetime"]], y=[float(tr["exit_price"])],
+                                        mode="markers+text", marker=dict(symbol="x", size=12, color="#b2b5be"),
+                                        text=[f"Exit ({tr.get('exit_reason','')})"], textposition="top center",
+                                        textfont=dict(color="#b2b5be", size=10), name="Exit", showlegend=False,
+                                    ))
+                                    fig_day.add_hline(y=float(tr["initial_stop"]), line=dict(color="#ef5350", width=1, dash="dot"), annotation_text="Stop", annotation_position="left")
+                                    fig_day.add_hline(y=float(tr["target"]), line=dict(color="#26a69a", width=1, dash="dot"), annotation_text="Target", annotation_position="left")
+                                except Exception:
+                                    pass
+                            fig_day.update_layout(
+                                template="plotly_dark",
+                                paper_bgcolor="#131722", plot_bgcolor="#131722",
+                                xaxis=dict(gridcolor="#2a2e39", showgrid=True),
+                                yaxis=dict(gridcolor="#2a2e39", showgrid=True),
+                                xaxis_rangeslider_visible=False,
+                                height=420, hovermode="x unified",
+                                legend=dict(bgcolor="#1e2130", bordercolor="#2a2e39", font=dict(color="#d1d4dc")),
+                            )
+                            st.plotly_chart(fig_day, use_container_width=True)
+                        else:
+                            st.caption("Upload or run with full prepared data to see the intraday chart. Re-run the backtest to populate.")
+
+                        # ── Signal validation summary ────────────────────
+                        with st.expander("Signal validation — why this trade fired", expanded=False):
+                            for _, tr in day_trades.iterrows():
+                                side_color = "#26a69a" if tr.get("side") == "LONG" else "#ef5350"
+                                st.markdown(f"""
+<div style="background:#1e2130;border:1px solid #2a2e39;border-radius:8px;padding:14px 18px;margin-bottom:10px;">
+<span style="color:{side_color};font-weight:700;font-size:1rem;">{tr.get('side','?')} @ ₹{float(tr.get('entry_price',0)):.2f}</span>
+<span style="color:#868993;font-size:0.8rem;margin-left:12px;">{tr.get('entry_datetime','')}</span><br/>
+<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:0.82rem;">
+<tr><td style="color:#868993;padding:3px 8px;">OR High / Low</td><td style="color:#d1d4dc;padding:3px 8px;">₹{float(tr.get('opening_range_high',0)):.2f} / ₹{float(tr.get('opening_range_low',0)):.2f}</td>
+    <td style="color:#868993;padding:3px 8px;">VWAP at entry</td><td style="color:#d1d4dc;padding:3px 8px;">₹{float(tr.get('entry_vwap',0)):.2f}</td></tr>
+<tr><td style="color:#868993;padding:3px 8px;">Volume ratio</td><td style="color:#d1d4dc;padding:3px 8px;">{float(tr.get('breakout_volume_ratio',0)):.2f}x</td>
+    <td style="color:#868993;padding:3px 8px;">EMA20 at entry</td><td style="color:#d1d4dc;padding:3px 8px;">₹{float(tr.get('entry_ema20',0)):.2f}</td></tr>
+<tr><td style="color:#868993;padding:3px 8px;">Stop</td><td style="color:#ef5350;padding:3px 8px;">₹{float(tr.get('initial_stop',0)):.2f}</td>
+    <td style="color:#868993;padding:3px 8px;">Target</td><td style="color:#26a69a;padding:3px 8px;">₹{float(tr.get('target',0)):.2f}</td></tr>
+<tr><td style="color:#868993;padding:3px 8px;">Exit reason</td><td style="color:#d1d4dc;padding:3px 8px;">{tr.get('exit_reason','?')}</td>
+    <td style="color:#868993;padding:3px 8px;">Realized R</td><td style="color:#d1d4dc;padding:3px 8px;">{float(tr.get('realized_r_multiple',0)):.2f}R</td></tr>
+<tr><td style="color:#868993;padding:3px 8px;">Net PnL</td><td style="color:{side_color};padding:3px 8px;font-weight:600;">₹{float(tr.get('net_pnl',0)):,.0f}</td>
+    <td style="color:#868993;padding:3px 8px;">Bars held</td><td style="color:#d1d4dc;padding:3px 8px;">{tr.get('bars_held','?')}</td></tr>
+</table></div>""", unsafe_allow_html=True)
+                    else:
+                        st.info(f"No trades on {sel_date}.")
+
+                # ── Downloads ────────────────────────────────────────────
+                st.markdown("---")
                 tbuf = io.StringIO(); trades.to_csv(tbuf, index=False)
                 dbuf = io.StringIO(); daily.to_csv(dbuf, index=False)
                 fbuf = io.StringIO(); feats.to_csv(fbuf, index=False)
-                st.download_button("Download trades CSV", tbuf.getvalue(), file_name="intraday_trades.csv", mime="text/csv")
-                st.download_button("Download daily PnL CSV", dbuf.getvalue(), file_name="intraday_daily_pnl.csv", mime="text/csv")
-                st.download_button("Download features CSV", fbuf.getvalue(), file_name="intraday_features.csv", mime="text/csv")
+                dc1, dc2, dc3 = st.columns(3)
+                dc1.download_button("⬇ Trades CSV", tbuf.getvalue(), file_name="intraday_trades.csv", mime="text/csv", use_container_width=True)
+                dc2.download_button("⬇ Daily PnL CSV", dbuf.getvalue(), file_name="intraday_daily_pnl.csv", mime="text/csv", use_container_width=True)
+                dc3.download_button("⬇ Features CSV", fbuf.getvalue(), file_name="intraday_features.csv", mime="text/csv", use_container_width=True)
     with right:
         st.markdown("#### Latest snapshot")
         st.dataframe(format_snapshot(snapshot), use_container_width=True, hide_index=True)

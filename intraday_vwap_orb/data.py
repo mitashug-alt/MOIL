@@ -76,7 +76,9 @@ def prepare_intraday(df: pd.DataFrame, cfg: StrategyConfig, from_date: Optional[
     or_df = opening_range(out, cfg.opening_range_start, cfg.opening_range_end)
     out = out.merge(or_df, on="date", how="left")
     out["prev5_avg_vol"] = out["volume"].rolling(cfg.volume_lookback_bars).mean()
-    out["vol_ratio"] = out["volume"] / out["prev5_avg_vol"]
+    # Safe division: avoid inf/NaN when prev5_avg_vol is 0 or NaN
+    prev5_avg = out["prev5_avg_vol"].replace(0, float("nan"))
+    out["vol_ratio"] = out["volume"] / prev5_avg
     return out
 
 

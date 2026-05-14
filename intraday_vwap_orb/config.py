@@ -27,6 +27,9 @@ class StrategyConfig:
     cost_aware_breakeven: bool = False
     enable_ema_trailing_stop: bool = True
     conservative_same_bar_exit: bool = True
+    entry_on_next_bar_open: bool = True       # enter at next bar open, not signal bar close
+    min_or_range_pct: float = 0.3             # skip days where OR range < this % of OR low
+    max_gap_pct: float = 2.0                  # skip days where gap vs prior close > this %
     slippage_bps: float = 5.0
     transaction_cost_bps: float = 2.0
     sizing_method: str = "fixed_notional"  # fixed_quantity | fixed_notional | risk_based

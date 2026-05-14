@@ -17,8 +17,11 @@ class Signal:
 
 def add_indicators(df: pd.DataFrame, cfg: StrategyConfig) -> pd.DataFrame:
     out = df.copy()
-    out["vwap"] = out["vwap"]
-    out["ema20"] = out["ema20"]
+    # Validate required columns exist
+    required = ["vwap", "ema20", "datetime"]
+    missing = [c for c in required if c not in out.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
     out["date"] = out["datetime"].dt.date
     out["time"] = out["datetime"].dt.time
     return out
@@ -29,7 +32,7 @@ def volume_ratio_ok(df: pd.DataFrame, i: int, lookback: int, thresh: float) -> t
     window = df.iloc[start:i]
     avg_vol = window["volume"].mean() if not window.empty else float("nan")
     cur_vol = df.iloc[i]["volume"]
-    ratio = cur_vol / avg_vol if avg_vol and avg_vol == avg_vol and avg_vol > 0 else 0
+    ratio = cur_vol / avg_vol if pd.notna(avg_vol) and avg_vol > 0 else 0
     return ratio >= thresh, cur_vol, avg_vol
 
 
@@ -48,8 +51,8 @@ def generate_signals_with_stats(df: pd.DataFrame, cfg: StrategyConfig, or_high: 
     first_breakout_side = None
     first_breakout_time = None
     first_breakout_volume_ratio = None
-    for i, row in df.iterrows():
-        t: time = row["time"]
+    for i, row in enumerate(df.itertuples(index=False)):
+        t: time = row.time
         if t < entry_start or t > entry_end:
             continue
         ok_vol, cur_vol, avg_vol = volume_ratio_ok(df, i, cfg.volume_lookback_bars, cfg.volume_multiplier)
@@ -57,25 +60,28 @@ def generate_signals_with_stats(df: pd.DataFrame, cfg: StrategyConfig, or_high: 
         if not ok_vol:
             rejected_low_volume += 1
             continue
-        if cfg.allow_long and row["close"] > or_high:
-            if row["close"] > row["vwap"]:
-                if not cfg.require_ema_filter or row["close"] > row.get("ema20", row["close"]):
+        row_close = row.close
+        row_vwap = getattr(row, "vwap", row_close)
+        row_ema20 = getattr(row, "ema20", row_close)
+        if cfg.allow_long and row_close > or_high:
+            if row_close > row_vwap:
+                if not cfg.require_ema_filter or row_close > row_ema20:
                     signals.append(Signal(i, "LONG", f"breakout high vol {cur_vol:.0f}/{avg_vol:.0f}"))
                     if first_breakout_side is None:
                         first_breakout_side = "LONG"
-                        first_breakout_time = row["time"]
+                        first_breakout_time = row.time
                         first_breakout_volume_ratio = ratio
                 else:
                     rejected_below_vwap_long += 1
             else:
                 rejected_below_vwap_long += 1
-        if cfg.allow_short and row["close"] < or_low:
-            if row["close"] < row["vwap"]:
-                if not cfg.require_ema_filter or row["close"] < row.get("ema20", row["close"]):
+        if cfg.allow_short and row_close < or_low:
+            if row_close < row_vwap:
+                if not cfg.require_ema_filter or row_close < row_ema20:
                     signals.append(Signal(i, "SHORT", f"breakdown high vol {cur_vol:.0f}/{avg_vol:.0f}"))
                     if first_breakout_side is None:
                         first_breakout_side = "SHORT"
-                        first_breakout_time = row["time"]
+                        first_breakout_time = row.time
                         first_breakout_volume_ratio = ratio
                 else:
                     rejected_above_vwap_short += 1
