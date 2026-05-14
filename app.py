@@ -468,13 +468,13 @@ with tabs[0]:
                             slippage_bps=slippage_bps,
                         )
                         prepared = prepare_intraday(df_raw, cfg)
-                        trades, daily, summary, stats = run_backtest(prepared, cfg)
+                        trades, daily, bt_summary, stats = run_backtest(prepared, cfg)
                         feats = daily_features(trades, stats, prepared)
                         st.session_state["intraday_trades"] = trades
                         st.session_state["intraday_daily"] = daily
                         st.session_state["intraday_feats"] = feats
-                        st.session_state["intraday_summary"] = summary
-                        st.success(f"Backtest complete: {summary['total_trades']} trades")
+                        st.session_state["intraday_summary"] = bt_summary
+                        st.success(f"Backtest complete: {bt_summary['total_trades']} trades")
                     except Exception as e:
                         st.error(f"Backtest failed: {e}")
         with dl_col:
