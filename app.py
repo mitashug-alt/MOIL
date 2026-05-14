@@ -1705,7 +1705,7 @@ if _t9 is not None:
                                 return "background-color: #2a1a1a; color: #ef5350"
 
                         st.dataframe(
-                            _opp_df.style.applymap(_conf_color, subset=["Confidence"]),
+                            _opp_df.style.map(_conf_color, subset=["Confidence"]),
                             use_container_width=True, hide_index=True,
                         )
 
@@ -2015,11 +2015,15 @@ The engine auto-fetches the last 60 days of real 5m MOIL data from TradingView. 
                     help="When enabled, a LONG signal is only taken if price > EMA20, and SHORT only if price < EMA20. "
                          "Aligns trades with the short-term trend. "
                          "Currently off by default — MOIL's intraday trend reversals can make this filter too restrictive.")
-                _slip = st.slider(
-                    "Slippage + transaction costs (bps total, per side)", 0, 50, 7, 1, key="it_slip",
-                    help="Total friction per trade in basis points (1 bps = 0.01%). Applied on both entry and exit. "
-                         "Default 7 bps = ~0.07% per side (covers STT ~0.025% + brokerage ~0.03% + market impact ~0.015%). "
-                         "Set higher (10–15 bps) for conservative estimates on thin days.")
+                _slip_pct = st.number_input(
+                    "Total costs % per side (brokerage + STT + slippage)",
+                    min_value=0.0, max_value=1.0, value=0.07, step=0.01,
+                    format="%.2f", key="it_slip",
+                    help="All-in friction per trade leg as a percentage of trade value. "
+                         "Applied on both entry and exit. "
+                         "Typical breakdown: brokerage ~0.03% + STT ~0.025% + market impact ~0.015% = 0.07%. "
+                         "Use 0.10–0.15% for conservative estimates on thin/illiquid days.")
+                _slip = _slip_pct * 100  # convert % → bps for StrategyConfig
 
             if st.button("▶️ Run intraday backtest", use_container_width=True, key="it_run", type="primary"):
                 with st.spinner("Running VWAP + ORB backtest..."):
