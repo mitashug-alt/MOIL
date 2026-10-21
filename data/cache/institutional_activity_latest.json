@@ -2,7 +2,7 @@
   "ok": true,
   "symbol": "MOIL",
   "company_name": "MOIL Ltd",
-  "scraped_at": "2026-10-20T23:18:36.554312+00:00",
+  "scraped_at": "2026-10-21T23:26:08.036508+00:00",
   "diagnostics": [
     "bulk: failed HTTPSConnectionPool(host='nsearchives.nseindia.com', port=443): Read timed out. (read timeout=30)",
     "block: failed HTTPSConnectionPool(host='nsearchives.nseindia.com', port=443): Read timed out. (read timeout=30)",
@@ -28,7 +28,7 @@
       "previous_period": null,
       "previous_holding_pct": 64.68,
       "delta_pct_points": 0.0,
-      "scraped_at": "2026-10-20T23:18:35.157234+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501007+00:00",
       "confidence": 0.55,
       "raw_text": "Promoters + | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68%"
     },
@@ -43,7 +43,7 @@
       "previous_period": null,
       "previous_holding_pct": 2.35,
       "delta_pct_points": 2.36,
-      "scraped_at": "2026-10-20T23:18:35.157408+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501135+00:00",
       "confidence": 0.55,
       "raw_text": "FIIs + | 4.71% | 2.35% | 3.48% | 4.87% | 3.12% | 3.25% | 6.16% | 6.05% | 4.83% | 4.16% | 3.73% | 1.52%"
     },
@@ -58,7 +58,7 @@
       "previous_period": null,
       "previous_holding_pct": 12.35,
       "delta_pct_points": -1.0600000000000005,
-      "scraped_at": "2026-10-20T23:18:35.157558+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501229+00:00",
       "confidence": 0.55,
       "raw_text": "DIIs + | 11.29% | 12.35% | 10.00% | 7.92% | 8.24% | 7.65% | 6.64% | 7.12% | 6.81% | 7.63% | 6.82% | 6.61%"
     },
@@ -73,7 +73,7 @@
       "previous_period": null,
       "previous_holding_pct": 20.6,
       "delta_pct_points": -1.3100000000000023,
-      "scraped_at": "2026-10-20T23:18:35.157729+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501318+00:00",
       "confidence": 0.55,
       "raw_text": "Public + | 19.29% | 20.60% | 21.83% | 22.52% | 23.94% | 24.41% | 22.52% | 22.13% | 23.68% | 23.52% | 24.76% | 27.18%"
     },
@@ -88,7 +88,7 @@
       "previous_period": null,
       "previous_holding_pct": 65.69,
       "delta_pct_points": -0.10999999999999943,
-      "scraped_at": "2026-10-20T23:18:35.160537+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503037+00:00",
       "confidence": 0.55,
       "raw_text": "Promoters + | 65.58% | 65.69% | 65.69% | 64.35% | 64.35% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68% | 64.68%"
     },
@@ -103,7 +103,7 @@
       "previous_period": null,
       "previous_holding_pct": 3.74,
       "delta_pct_points": -1.27,
-      "scraped_at": "2026-10-20T23:18:35.160704+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503135+00:00",
       "confidence": 0.55,
       "raw_text": "FIIs + | 2.47% | 3.74% | 3.89% | 2.92% | 4.72% | 5.57% | 5.97% | 2.35% | 3.25% | 4.16% | 1.52%"
     },
@@ -118,7 +118,7 @@
       "previous_period": null,
       "previous_holding_pct": 13.66,
       "delta_pct_points": 2.960000000000001,
-      "scraped_at": "2026-10-20T23:18:35.160857+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503222+00:00",
       "confidence": 0.55,
       "raw_text": "DIIs + | 16.62% | 13.66% | 13.66% | 14.85% | 13.82% | 12.20% | 12.06% | 12.35% | 7.65% | 7.63% | 6.61%"
     },
@@ -133,7 +133,7 @@
       "previous_period": null,
       "previous_holding_pct": 16.91,
       "delta_pct_points": -1.5700000000000003,
-      "scraped_at": "2026-10-20T23:18:35.161059+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503310+00:00",
       "confidence": 0.55,
       "raw_text": "Public + | 15.34% | 16.91% | 16.76% | 17.87% | 17.11% | 17.54% | 17.28% | 20.60% | 24.41% | 23.52% | 27.18%"
     }
@@ -148,7 +148,7 @@
       "institution": "FII",
       "description": "FII holding rose by 2.36 percentage points QoQ.",
       "score_impact": 1.0,
-      "created_at": "2026-10-20T23:18:36.554151+00:00",
+      "created_at": "2026-10-21T23:26:08.036379+00:00",
       "evidence": [
         {
           "observation_id": "a178dcaf78f156a5f2a9b435",
@@ -161,7 +161,7 @@
           "previous_period": null,
           "previous_holding_pct": 2.35,
           "delta_pct_points": 2.36,
-          "scraped_at": "2026-10-20T23:18:35.157408+00:00",
+          "scraped_at": "2026-10-21T23:26:06.501135+00:00",
           "confidence": 0.55,
           "raw_text": "FIIs + | 4.71% | 2.35% | 3.48% | 4.87% | 3.12% | 3.25% | 6.16% | 6.05% | 4.83% | 4.16% | 3.73% | 1.52%"
         }
@@ -175,7 +175,7 @@
       "institution": "DII",
       "description": "DII holding fell by -1.06 percentage points QoQ.",
       "score_impact": -1.0,
-      "created_at": "2026-10-20T23:18:36.554229+00:00",
+      "created_at": "2026-10-21T23:26:08.036449+00:00",
       "evidence": [
         {
           "observation_id": "9d6a0c019c583ccf297ec174",
@@ -188,7 +188,7 @@
           "previous_period": null,
           "previous_holding_pct": 12.35,
           "delta_pct_points": -1.0600000000000005,
-          "scraped_at": "2026-10-20T23:18:35.157558+00:00",
+          "scraped_at": "2026-10-21T23:26:06.501229+00:00",
           "confidence": 0.55,
           "raw_text": "DIIs + | 11.29% | 12.35% | 10.00% | 7.92% | 8.24% | 7.65% | 6.64% | 7.12% | 6.81% | 7.63% | 6.82% | 6.61%"
         }
@@ -202,7 +202,7 @@
       "institution": "FII",
       "description": "FII holding fell by -1.27 percentage points QoQ.",
       "score_impact": -1.0,
-      "created_at": "2026-10-20T23:18:36.554262+00:00",
+      "created_at": "2026-10-21T23:26:08.036473+00:00",
       "evidence": [
         {
           "observation_id": "b8c1151b7e0ffe6aa9a39998",
@@ -215,7 +215,7 @@
           "previous_period": null,
           "previous_holding_pct": 3.74,
           "delta_pct_points": -1.27,
-          "scraped_at": "2026-10-20T23:18:35.160704+00:00",
+          "scraped_at": "2026-10-21T23:26:06.503135+00:00",
           "confidence": 0.55,
           "raw_text": "FIIs + | 2.47% | 3.74% | 3.89% | 2.92% | 4.72% | 5.57% | 5.97% | 2.35% | 3.25% | 4.16% | 1.52%"
         }
@@ -229,7 +229,7 @@
       "institution": "DII",
       "description": "DII holding rose by 2.96 percentage points QoQ.",
       "score_impact": 1.0,
-      "created_at": "2026-10-20T23:18:36.554288+00:00",
+      "created_at": "2026-10-21T23:26:08.036490+00:00",
       "evidence": [
         {
           "observation_id": "78ba2931ed8b96368e4050af",
@@ -242,7 +242,7 @@
           "previous_period": null,
           "previous_holding_pct": 13.66,
           "delta_pct_points": 2.960000000000001,
-          "scraped_at": "2026-10-20T23:18:35.160857+00:00",
+          "scraped_at": "2026-10-21T23:26:06.503222+00:00",
           "confidence": 0.55,
           "raw_text": "DIIs + | 16.62% | 13.66% | 13.66% | 14.85% | 13.82% | 12.20% | 12.06% | 12.35% | 7.65% | 7.63% | 6.61%"
         }
@@ -281,7 +281,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.157234+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501007+00:00",
       "confidence": 0.55,
       "client_name": "Promoter",
       "source_authority_points": 18,
@@ -290,7 +290,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 2,
-      "quality_timestamp": "2026-10-20T23:18:36.554696+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036830+00:00"
     },
     {
       "evidence_id": "a178dcaf78f156a5f2a9b435",
@@ -323,7 +323,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.157408+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501135+00:00",
       "confidence": 0.55,
       "client_name": "FII",
       "source_authority_points": 18,
@@ -332,7 +332,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 10,
-      "quality_timestamp": "2026-10-20T23:18:36.554732+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036856+00:00"
     },
     {
       "evidence_id": "9d6a0c019c583ccf297ec174",
@@ -365,7 +365,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.157558+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501229+00:00",
       "confidence": 0.55,
       "client_name": "DII",
       "source_authority_points": 18,
@@ -374,7 +374,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 8,
-      "quality_timestamp": "2026-10-20T23:18:36.554766+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036878+00:00"
     },
     {
       "evidence_id": "54b3e138dac1f825402e76dc",
@@ -407,7 +407,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.157729+00:00",
+      "scraped_at": "2026-10-21T23:26:06.501318+00:00",
       "confidence": 0.55,
       "client_name": "Public",
       "source_authority_points": 18,
@@ -416,7 +416,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 8,
-      "quality_timestamp": "2026-10-20T23:18:36.554793+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036896+00:00"
     },
     {
       "evidence_id": "54924ab11a1f6340f3bd60d1",
@@ -449,7 +449,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.160537+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503037+00:00",
       "confidence": 0.55,
       "client_name": "Promoter",
       "source_authority_points": 18,
@@ -458,7 +458,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 2,
-      "quality_timestamp": "2026-10-20T23:18:36.554826+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036917+00:00"
     },
     {
       "evidence_id": "b8c1151b7e0ffe6aa9a39998",
@@ -491,7 +491,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.160704+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503135+00:00",
       "confidence": 0.55,
       "client_name": "FII",
       "source_authority_points": 18,
@@ -500,7 +500,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 8,
-      "quality_timestamp": "2026-10-20T23:18:36.554852+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036932+00:00"
     },
     {
       "evidence_id": "78ba2931ed8b96368e4050af",
@@ -533,7 +533,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.160857+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503222+00:00",
       "confidence": 0.55,
       "client_name": "DII",
       "source_authority_points": 18,
@@ -542,7 +542,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 10,
-      "quality_timestamp": "2026-10-20T23:18:36.554915+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036949+00:00"
     },
     {
       "evidence_id": "b375d3a32e285991a1e74ee6",
@@ -575,7 +575,7 @@
       "symbol": "MOIL",
       "period": null,
       "previous_period": null,
-      "scraped_at": "2026-10-20T23:18:35.161059+00:00",
+      "scraped_at": "2026-10-21T23:26:06.503310+00:00",
       "confidence": 0.55,
       "client_name": "Public",
       "source_authority_points": 18,
@@ -584,7 +584,7 @@
       "parser_points": 8,
       "cross_source_points": 0,
       "materiality_points": 8,
-      "quality_timestamp": "2026-10-20T23:18:36.554979+00:00"
+      "quality_timestamp": "2026-10-21T23:26:08.036979+00:00"
     }
   ],
   "institutional_source_readiness": [
